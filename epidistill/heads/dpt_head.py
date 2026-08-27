@@ -13,49 +13,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def _make_scratch(in_shape, out_shape, groups=1, expand=False):
+def _make_scratch(in_shape, out_shape):
+    """1x1-free 3x3 projections bringing every level to a common width."""
     scratch = nn.Module()
-
-    out_shape1 = out_shape
-    out_shape2 = out_shape
-    out_shape3 = out_shape
-    if len(in_shape) >= 4:
-        out_shape4 = out_shape
-
-    if expand:
-        out_shape1 = out_shape
-        out_shape2 = out_shape*2
-        out_shape3 = out_shape*4
-        if len(in_shape) >= 4:
-            out_shape4 = out_shape*8
-
-    scratch.layer1_rn = nn.Conv2d(
-        in_shape[0], out_shape1, kernel_size=3, stride=1, padding=1, bias=False, groups=groups
-    )
-    scratch.layer2_rn = nn.Conv2d(
-        in_shape[1], out_shape2, kernel_size=3, stride=1, padding=1, bias=False, groups=groups
-    )
-    scratch.layer3_rn = nn.Conv2d(
-        in_shape[2], out_shape3, kernel_size=3, stride=1, padding=1, bias=False, groups=groups
-    )
-    if len(in_shape) >= 4:
-        scratch.layer4_rn = nn.Conv2d(
-            in_shape[3], out_shape4, kernel_size=3, stride=1, padding=1, bias=False, groups=groups
+    for i, in_ch in enumerate(in_shape):
+        setattr(
+            scratch,
+            f"layer{i + 1}_rn",
+            nn.Conv2d(in_ch, out_shape, kernel_size=3, stride=1, padding=1, bias=False),
         )
-
     return scratch
 
 
-def _make_fusion_block(features, use_bn, size=None, skip_res_unit1=False):
+def _make_fusion_block(features, use_bn, skip_res_unit1=False):
     return FeatureFusionBlock(
-        features,
-        nn.ReLU(False),
-        deconv=False,
-        bn=use_bn,
-        expand=False,
-        align_corners=True,
-        size=size,
-        skip_res_unit1=skip_res_unit1,
+        features, nn.ReLU(False), bn=use_bn, skip_res_unit1=skip_res_unit1
     )
 
 
@@ -100,7 +72,6 @@ class ResidualConvUnit(nn.Module):
 
         self.activation = activation
 
-        self.skip_add = nn.quantized.FloatFunctional()
 
     def forward(self, x):
         """Forward pass.
@@ -125,81 +96,42 @@ class ResidualConvUnit(nn.Module):
         if self.groups > 1:
             out = self.conv_merge(out)
 
-        return self.skip_add.add(out, x)
+        return out + x
 
 
 class FeatureFusionBlock(nn.Module):
     """Feature fusion block.
     """
 
-    def __init__(self, features, activation, deconv=False, bn=False, expand=False, align_corners=True, size=None, skip_res_unit1=False):
-        """Init.
-
-        Args:
-            features (int): number of features
-        """
+    def __init__(self, features, activation, bn=False, skip_res_unit1=False):
         super(FeatureFusionBlock, self).__init__()
 
-        self.deconv = deconv
-        self.align_corners = align_corners
+        self.out_conv = nn.Conv2d(features, features, kernel_size=1, stride=1, padding=0, bias=True)
 
-        self.groups=1
-
-        self.expand = expand
-        out_features = features
-        if self.expand==True:
-            out_features = features//2
-        
-        self.out_conv = nn.Conv2d(features, out_features, kernel_size=1, stride=1, padding=0, bias=True, groups=1)
-
+        # The deepest block receives no skip connection, so it has no first unit.
         self.skip_res_unit1 = skip_res_unit1
         if not self.skip_res_unit1:
             self.resConfUnit1 = ResidualConvUnit(features, activation, bn)
-            
         self.resConfUnit2 = ResidualConvUnit(features, activation, bn)
-        
-        self.skip_add = nn.quantized.FloatFunctional()
-
-        self.size=size
 
     def forward(self, *xs, size=None):
-        """Forward pass.
-
-        """
         output = xs[0]
-        if len(xs) == 2:
-            if not self.skip_res_unit1:
-               res = self.resConfUnit1(xs[1])
-               output = self.skip_add.add(output, res)
-            else:
-               # Should generally not happen if configured correctly (len(xs) should be 1 if skip_res_unit1 is True)
-               # But if it does, we just add raw xs[1] or ignore it? 
-               # Based on architecture, skip_res_unit1 implies top layer where len(xs)==1.
-               pass
+        if len(xs) == 2 and not self.skip_res_unit1:
+            output = output + self.resConfUnit1(xs[1])
 
         output = self.resConfUnit2(output)
 
-        if (size is None) and (self.size is None):
-            modifier = {"scale_factor": 2}
-        elif size is None:
-            modifier = {"size": self.size}
-        else:
-            modifier = {"size": size}
-
+        modifier = {"size": size} if size is not None else {"scale_factor": 2}
         output = nn.functional.interpolate(
-            output, **modifier, mode="bilinear", align_corners=self.align_corners
+            output, **modifier, mode="bilinear", align_corners=True
         )
-
-        output = self.out_conv(output)
-
-        return output
+        return self.out_conv(output)
     
 
 class DPTHead(nn.Module):
-    def __init__(self, in_channels, features=256, use_bn=False, out_channels=[256, 512, 1024, 1024], use_clstoken=True, output_dim=2, use_base_depth=True):
+    def __init__(self, in_channels, features=256, use_bn=False,
+                 out_channels=[256, 512, 1024, 1024], output_dim=2):
         super(DPTHead, self).__init__()
-        
-        self.use_clstoken = use_clstoken
         
         self.projects = nn.ModuleList([
             nn.Conv2d(
@@ -233,23 +165,17 @@ class DPTHead(nn.Module):
                 padding=1)
         ])
         
-        if use_clstoken:
-            self.readout_projects = nn.ModuleList()
-            for _ in range(len(self.projects)):
-                self.readout_projects.append(
-                    nn.Sequential(
-                        nn.Linear(3 * in_channels, in_channels),
-                        nn.GELU()))
-        
-        self.scratch = _make_scratch(
-            out_channels,
-            features,
-            groups=1,
-            expand=False,
+        # Each level's patch tokens are concatenated with the backbone CLS token and
+        # the EpiDistill scale token before being projected back to `in_channels`.
+        self.readout_projects = nn.ModuleList(
+            [
+                nn.Sequential(nn.Linear(3 * in_channels, in_channels), nn.GELU())
+                for _ in self.projects
+            ]
         )
 
-        self.scratch.stem_transpose = None
-        
+        self.scratch = _make_scratch(out_channels, features)
+
         self.scratch.refinenet1 = _make_fusion_block(features, use_bn)
         self.scratch.refinenet2 = _make_fusion_block(features, use_bn)
         self.scratch.refinenet3 = _make_fusion_block(features, use_bn)
@@ -260,12 +186,9 @@ class DPTHead(nn.Module):
         
         self.scratch.output_conv1 = nn.Conv2d(head_features_1, head_features_1 // 2, kernel_size=3, stride=1, padding=1)
         
-        self.use_base_depth = use_base_depth
-
-        # Determine input features for the second output convolution
-        in_features_conv2 = head_features_1 // 2
-        if self.use_base_depth:
-            in_features_conv2 += 1  # +1 for the normalised base-depth channel D_base
+        # +1: the normalised base-depth channel D_base is concatenated before the
+        # output convolutions, so the head predicts its residual, not depth from scratch.
+        in_features_conv2 = head_features_1 // 2 + 1
 
         self.scratch.output_conv2 = nn.Sequential(
             nn.Conv2d(in_features_conv2, head_features_2, kernel_size=3, stride=1, padding=1),
@@ -283,24 +206,19 @@ class DPTHead(nn.Module):
             nn.init.constant_(self.scratch.output_conv2[-1].weight, 0)
             nn.init.constant_(self.scratch.output_conv2[-1].bias, 0)
 
-    def forward(self, out_features, patch_h, patch_w, base_depth=None, scale_token=None):
+    def forward(self, out_features, patch_h, patch_w, base_depth, scale_token):
+        """out_features: list of (B, 1 + N, C), CLS first.  Returns (B, output_dim, H, W)."""
+        s_tok = scale_token.unsqueeze(1) if scale_token.dim() == 2 else scale_token
+
         out = []
         for i, x in enumerate(out_features):
-            if self.use_clstoken :
-                if scale_token is None:
-                    raise ValueError("scale_token is required when use_clstoken=True")
-                s_tok = scale_token
-                if s_tok.dim() == 2:
-                    s_tok = s_tok.unsqueeze(1)
-                cls_token = x[:, 0:1, :]
-                x_patches = x[:, 1:, :]
-
-                readout_scale = s_tok.expand_as(x_patches)
-                readout_cls = cls_token.expand_as(x_patches)
-
-                x = self.readout_projects[i](torch.cat((x_patches, readout_cls, readout_scale), dim=-1))
-            else:
-                x = x[0]  
+            cls_token, x_patches = x[:, 0:1, :], x[:, 1:, :]
+            x = self.readout_projects[i](
+                torch.cat(
+                    (x_patches, cls_token.expand_as(x_patches), s_tok.expand_as(x_patches)),
+                    dim=-1,
+                )
+            )
 
             x = x.permute(0, 2, 1).reshape(
                 x.shape[0],
@@ -336,14 +254,8 @@ class DPTHead(nn.Module):
             align_corners=True
         )
         
-        if self.use_base_depth:
-            if base_depth is None:
-                raise ValueError("base_depth must be provided when use_base_depth is True")
-            
-            # Ensure base_depth matches out spatial dimensions
-            if base_depth.shape[-2:] != out.shape[-2:]:
-                 base_depth = F.interpolate(base_depth, size=out.shape[-2:], mode='nearest')
-            
-            out = torch.cat([out, base_depth], dim=1)
-        
+        if base_depth.shape[-2:] != out.shape[-2:]:
+            base_depth = F.interpolate(base_depth, size=out.shape[-2:], mode='nearest')
+        out = torch.cat([out, base_depth], dim=1)
+
         return self.scratch.output_conv2(out)

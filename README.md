@@ -155,6 +155,12 @@ released configuration composes the residual multiplicatively —
 matters. At initialisation every head is zero-init, so the model reproduces the
 frozen backbone exactly.
 
+The released code implements exactly this one architecture. Development ablation
+switches are not exposed: `EpiDistillConfig` holds only settings a user would
+legitimately change (backbone, resolution band, TTA, precision) plus the
+structure-composition form, which is the one place the implementation and Eq. 1
+differ (the released weights are trained with the multiplicative variant).
+
 ---
 
 ## Repository layout
@@ -192,6 +198,7 @@ the research code base (`focal token` → **scale token**, `virtual token` →
 
 ## Roadmap
 
+- [ ] Add `third_party/DepthPro/LICENSE` from the upstream repository
 - [ ] Publish pretrained EpiDistill weights for both backbones
 - [ ] Publish packed evaluation sets (KITTI, NYU, Bonn, DIODE, ETH3D)
 - [ ] Multi-view teacher forward + the full training objective
@@ -199,6 +206,13 @@ the research code base (`focal token` → **scale token**, `virtual token` →
 - [ ] Point-cloud reconstruction evaluation (Fig. 1)
 
 ---
+
+## License
+
+EpiDistill is released under **CC BY-NC 4.0** (see [LICENSE](LICENSE)) —
+non-commercial, because the repository vendors UniDepth, which is itself
+CC BY-NC 4.0. Third-party components keep their own licences; see
+[THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## Citation
 

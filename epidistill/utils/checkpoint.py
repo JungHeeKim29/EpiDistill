@@ -30,6 +30,7 @@ DROP_PREFIXES = (
     "pixel_decoder.",            # UniDepth decoder copy, used by an alternative DPT mode
     "decoder_adapters.",
     "cls_cross_view_attn.",      # CLS cross-view enrichment ablation
+    "scale_head.cls_proj.",      # CLS input channel to the scale head, held at zero
     "focal_tokens_per_level",    # superseded by scale_level_seed
     "focal_extra_tokens",        # multi-register scale read-out ablation
     "focal_extra_merge.",

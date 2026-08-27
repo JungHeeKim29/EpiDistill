@@ -1,11 +1,12 @@
 """Configuration for EpiDistill.
 
-Defaults reproduce the released single-view recipe: depth-guided epipolar
-attention with rectified stereo tokens, a scale head driven by the scale token
-alone, and a multiplicative structural residual on the frozen backbone's depth.
+These are the released single-view settings.  Ablation switches from development
+are not exposed: the code implements one architecture -- depth-guided epipolar
+attention with rectified stereo tokens, a scale head driven by the scale token,
+and a structural residual on the frozen backbone's depth.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Tuple
 
 
@@ -35,29 +36,20 @@ class EpiDistillConfig:
 
     # ── scale token read-out ──────────────────────────────────────────────────
     scale_num_heads: int = 8
-    # Two role-bound slots: slot 0 reads the reference view, slot 1 reads the source
-    # views (multi-view training) or T_rst-ref (single-view inference).
-    scale_ref_src_tokens: bool = True
-    # Slot 0's key/value set is every view, not the reference alone.
-    scale_ref_reads_all_views: bool = True
-    # Each level gets an additive learnable seed on top of the carried-over state.
-    scale_level_seed: bool = True
 
     # ── scale head ────────────────────────────────────────────────────────────
-    scale_from_scratch: bool = True       # predict log s_hat directly (no backbone anchor)
-    scale_use_depth_stats: bool = False
-    scale_use_focal_norm: bool = False
-    scale_use_cls: bool = False
     log_scale_min: float = -3.0
     log_scale_max: float = 6.0
 
     # ── depth composition (Eq. 1) ─────────────────────────────────────────────
-    # D_struct = D_base * exp(tau * tanh(Delta d / tau)); tau <= 0 disables the squash.
+    # Multiplicative:  D_struct = D_base * exp(tau * tanh(Delta d / tau))
+    # Additive:        D_struct = D_base + Delta d          (the form printed in Eq. 1)
+    # The released weights are trained with the multiplicative form -- see
+    # EpiDistill._compose_struct for why. tau <= 0 disables the squash.
     struct_multiplicative: bool = True
     struct_tau: float = 3.0
-    # Normalise D_struct over the pixels the backbone itself declared valid.
-    struct_norm_masked: bool = True
     backbone_valid_eps: float = 1e-3
+    min_depth: float = 0.01
 
     # ── input conditioning ────────────────────────────────────────────────────
     # UniDepthV2's own shape constraints; DepthPro skips the aspect padding
@@ -65,7 +57,6 @@ class EpiDistillConfig:
     ratio_bounds: Tuple[float, float] = (0.5, 2.5)
     pixels_min: int = 200_000
     pixels_max: int = 600_000
-    min_depth: float = 0.01
 
     # ── inference ─────────────────────────────────────────────────────────────
     use_hflip_tta: bool = True

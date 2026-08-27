@@ -30,6 +30,5 @@ Licence: Apple's licence, as published in that repository.
 
 ## EpiDistill's own code
 
-**TODO before publishing:** add a top-level `LICENSE`. Note that the UniDepth
-CC BY-NC term above constrains what the combined distribution can be released
-under.
+Released under **CC BY-NC 4.0** (see `LICENSE`), matching UniDepth so that the
+combined distribution is self-consistent.

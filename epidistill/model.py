@@ -98,13 +98,14 @@ class EpiDistill(nn.Module):
         )
 
         # ── scale token (F_scale) ─────────────────────────────────────────────
+        # Two role-bound slots: slot 0 reads the reference view, slot 1 reads the
+        # source content -- the source views for the multi-view teacher, T_rst-ref
+        # for the single-view model.  Seeded as copies so both start somewhere sane;
+        # they diverge immediately because their key/value sets differ.
         self.scale_token = nn.Parameter(torch.randn(1, C) * 0.02)
-        if cfg.scale_ref_src_tokens:
-            # Role-bound source slot; seeded as a copy so both start somewhere sane.
-            self.scale_src_token = nn.Parameter(self.scale_token.detach().clone())
-        if cfg.scale_level_seed:
-            # Zero-init: an untrained seed is an exact no-op.
-            self.scale_level_seed = nn.Parameter(torch.zeros(L, 1, C))
+        self.scale_src_token = nn.Parameter(self.scale_token.detach().clone())
+        # Per-level additive seed, zero-init: an untrained seed is an exact no-op.
+        self.scale_level_seed = nn.Parameter(torch.zeros(L, 1, C))
         self.scale_level_proj = nn.ModuleList(
             [
                 nn.Sequential(
@@ -132,9 +133,7 @@ class EpiDistill(nn.Module):
         self.dpt_head = DPTHead(
             C,
             features=64,
-            use_clstoken=True,
-            output_dim=2,
-            use_base_depth=True,
+            output_dim=2,                       # 0 = structural shift Delta d, 1 = confidence
             out_channels=[64, 128, 256, 256],
             use_bn=True,
         )
@@ -142,9 +141,6 @@ class EpiDistill(nn.Module):
         self.scale_head = ScaleHead(
             dim_in=C,
             output_dim=1,
-            from_scratch=cfg.scale_from_scratch,
-            use_depth_stats=cfg.scale_use_depth_stats,
-            use_focal_norm=cfg.scale_use_focal_norm,
             log_scale_min=cfg.log_scale_min,
             log_scale_max=cfg.log_scale_max,
         )
@@ -246,78 +242,38 @@ class EpiDistill(nn.Module):
     # scale-token plumbing
     # ══════════════════════════════════════════════════════════════════════════
     def _scale_seed(self, batch_size):
-        """Level-0 scale query: (B, 1, C), or (B, 2, C) with role-bound slots."""
-        seed = self.scale_token
-        if self.config.scale_ref_src_tokens:
-            seed = torch.cat([self.scale_token, self.scale_src_token], dim=0)
+        """Level-0 scale query: (B, 2, C), slot 0 = reference, slot 1 = source."""
+        seed = torch.cat([self.scale_token, self.scale_src_token], dim=0)
         return seed.unsqueeze(0).expand(batch_size, -1, -1)
 
     def _level_scale_query(self, level, state):
-        """Per-level query = proj_L(carried-over state) [+ learnable seed_L].
+        """Per-level query = proj_L(carried-over state) + learnable seed_L.
 
         The projection makes each level a transform of one shared state; the
         additive seed lets a level ask its own question regardless of the answer
         the previous level produced.
         """
-        q = self.scale_level_proj[level](state)
-        if self.config.scale_level_seed:
-            q = q + self.scale_level_seed[level].unsqueeze(0)
-        return q
+        return self.scale_level_proj[level](state) + self.scale_level_seed[level].unsqueeze(0)
 
-    def _prepend_scale(self, level_scale, n_view):
-        """Build the (B, V, 1, C) scale row prepended to each view's sequence."""
-        if self.config.scale_ref_src_tokens and level_scale.shape[1] == 2:
-            idx = torch.zeros(n_view, dtype=torch.long, device=level_scale.device)
-            idx[1:] = 1                                # view 0 -> ref slot, others -> src slot
-            return level_scale[:, idx].unsqueeze(2)
-        if level_scale.shape[1] == n_view:
-            return level_scale.unsqueeze(2)
-        return level_scale.unsqueeze(1).expand(-1, n_view, -1, -1)
+    def _scale_readout(self, level, level_scale, ref_spatial, src_spatial):
+        """Read the scale token out of the post-epipolar tokens.
 
-    def _scale_readout(self, level, level_scale, views_spatial, src_spatial=None,
-                       valid_mask=None):
-        """Read the scale token out of the post-epipolar spatial tokens.
-
-        With role-bound slots, slot 0 reads the image views and slot 1 reads the
-        source content -- the real source views for the multi-view teacher, the
-        reference-guided rectified stereo tokens T_rst-ref for the single-view
-        model.  Both slots go through the same module, so the read-out weights are
-        shared and only the token differs; the separation *is* the architecture,
-        there is no auxiliary loss holding the two apart.
+        Slot 0 reads the reference view's spatial tokens, slot 1 reads the
+        reference-guided rectified stereo tokens.  Both go through the same
+        module, so the read-out weights are shared and only the token differs;
+        the separation *is* the architecture, there is no auxiliary loss holding
+        the two apart.
         """
-        cfg = self.config
-        if not cfg.scale_ref_src_tokens:
-            return self.scale_cross_view_attn[level](
-                level_scale, views_spatial, valid_mask=valid_mask
-            )
-
-        ref_kv = views_spatial if cfg.scale_ref_reads_all_views else views_spatial[:, :1]
-        ref_mask = valid_mask if (cfg.scale_ref_reads_all_views and ref_kv.shape[1] > 1) else None
-        ref_out = self.scale_cross_view_attn[level](
-            level_scale[:, 0:1], ref_kv, valid_mask=ref_mask
-        )
-
-        if src_spatial is not None:
-            src_kv, src_mask, include_ref = src_spatial, None, False
-        elif views_spatial.shape[1] >= 2:
-            src_kv, src_mask, include_ref = views_spatial[:, 1:], valid_mask, False
-        else:
-            # No source content at all: carry the source slot forward untouched
-            # rather than inventing content for it.
-            return torch.cat([ref_out, level_scale[:, 1:2]], dim=1)
-
-        src_out = self.scale_cross_view_attn[level](
-            level_scale[:, 1:2], src_kv, valid_mask=src_mask, include_ref=include_ref
-        )
+        ref_out = self.scale_cross_view_attn[level](level_scale[:, 0:1], ref_spatial)
+        src_out = self.scale_cross_view_attn[level](level_scale[:, 1:2], src_spatial)
         return torch.cat([ref_out, src_out], dim=1)
 
     def _pool_scale_history(self, history):
-        """Self-attention across levels; folds the slot axis into the batch."""
+        """Self-attention across levels; the slot axis is folded into the batch,
+        so slots mix across levels but never with each other."""
         B, V, C = history[0].shape
-        if V == 1:
-            return self.scale_level_attn(history).squeeze(1)           # (B, C)
         folded = [s.reshape(B * V, 1, C) for s in history]
-        return self.scale_level_attn(folded).squeeze(1).view(B, V, C)  # (B, V, C)
+        return self.scale_level_attn(folded).squeeze(1).view(B, V, C)
 
     # ══════════════════════════════════════════════════════════════════════════
     # rectified stereo tokens
@@ -367,7 +323,6 @@ class EpiDistill(nn.Module):
             K_ref=K,
             K_src=K,
             T_ref2src=eye,
-            mode="cross",
             rectified=True,
         )
         out = out.permute(0, 2, 3, 1).reshape(B, 1, Hp * Wp, C)
@@ -403,10 +358,9 @@ class EpiDistill(nn.Module):
         structure is the frozen backbone's -- and it saturates at ``e^{+-tau}``, far
         outside any correction actually observed.
 
-        (The *scale* at initialisation depends on the scale head: anchored
-        (``scale_from_scratch=False``) it is the backbone's own median depth, so the
-        whole prediction starts as the backbone; from scratch it is ``exp(0) = 1`` m
-        and has to be learned.)
+        The *scale* is a separate story: the scale head is zero-init too, so an
+        untrained model emits ``s_hat = exp(0) = 1`` m and the metric scale has to
+        be learned from the distilled geometry -- only the structure is inherited.
         """
         if not self.config.struct_multiplicative:
             return base_depth_norm + delta_d
@@ -415,7 +369,7 @@ class EpiDistill(nn.Module):
         return base_depth_norm * torch.exp(s)
 
     @torch.no_grad()
-    def _struct_norm(self, struct, valid_mask=None):
+    def _struct_norm(self, struct, valid_mask):
         """Per-image normaliser ``_sm``, so ``D_adj = (D_struct / _sm) * s_hat``.
 
         ``torch.no_grad`` is part of the design, not an optimisation: ``_sm`` must be
@@ -423,57 +377,41 @@ class EpiDistill(nn.Module):
         scale loss into the structural offset and the scale/structure decoupling the
         composition rests on is lost.
 
-        The median is taken over the pixels the backbone itself declared valid, the
-        same support set the ``D_base`` normalisation uses -- otherwise sky and
-        backbone-invalid pixels fold into one anchor but not the other.
+        The median is taken over the pixels the backbone itself declared valid --
+        the same support set the ``D_base`` normalisation uses, so sky and
+        backbone-invalid pixels cannot fold into one anchor but not the other.
         """
         flat = struct.reshape(struct.shape[0], -1)
+        w = valid_mask.reshape(flat.shape[0], -1).to(flat.dtype)
+        # Same fallback as the D_base normalisation: too few valid pixels -> use all.
+        w = torch.where(w.sum(dim=1, keepdim=True) > 100, w, torch.ones_like(w))
 
-        if valid_mask is not None and self.config.struct_norm_masked:
-            w = valid_mask.reshape(flat.shape[0], -1).to(flat.dtype)
-            # Same fallback as the D_base normalisation: too few valid pixels -> use all.
-            w = torch.where(w.sum(dim=1, keepdim=True) > 100, w, torch.ones_like(w))
-            # Masked median without a loop: push invalid pixels above every real value.
-            big = flat.max(dim=1, keepdim=True).values + 1.0
-            ordered = torch.where(w > 0, flat, big).sort(dim=1).values
-            idx = (w.sum(dim=1) * 0.5).long().clamp(min=0, max=flat.shape[1] - 1)
-            v = ordered.gather(1, idx.view(-1, 1)).squeeze(1)
-        else:
-            v = flat.median(dim=1).values
+        # Masked median without a loop: push invalid pixels above every real value,
+        # sort, and take each image's own (n_valid / 2)-th order statistic.
+        big = flat.max(dim=1, keepdim=True).values + 1.0
+        ordered = torch.where(w > 0, flat, big).sort(dim=1).values
+        idx = (w.sum(dim=1) * 0.5).long().clamp(min=0, max=flat.shape[1] - 1)
+        v = ordered.gather(1, idx.view(-1, 1)).squeeze(1)
 
         return v.view(-1, 1, 1, 1).clamp(min=1e-3).detach()
 
     def _base_statistics(self, depth):
-        """Normalised base depth D_base and the log depth statistics.
+        """Normalised base depth ``D_base = D_orig / median_valid(D_orig)``.
 
-        ``D_base = D_orig / median_valid(D_orig)`` -- the scale-invariant structural
-        map of Sec. 4.  The median (not the mean) is used because it is robust to the
-        sky/far tail; the mask excludes pixels the backbone declared invalid.
+        The scale-invariant structural map of Sec. 4.  The median (not the mean)
+        is used because it is robust to the sky/far tail, and the mask excludes
+        pixels the backbone itself declared invalid.
         """
-        eps = self.config.backbone_valid_eps
-        valid = depth > eps
+        valid = depth > self.config.backbone_valid_eps
         depth = torch.clamp(depth, min=self.config.min_depth)
 
-        base, stats = [], []
+        base = []
         for b in range(depth.shape[0]):
             d = depth[b]
             v = d[valid[b]]
-            if v.numel() > 100:
-                center, std, rng = v.median(), v.std(), v.max() - v.min()
-            else:
-                center, std, rng = d.median(), d.std(), d.max() - d.min()
-            center = torch.clamp(center, min=self.config.min_depth)
-            base.append(d / center)
-            stats.append(
-                torch.stack(
-                    [
-                        torch.log(center),
-                        torch.log(torch.clamp(std, min=0.01)),
-                        torch.log(torch.clamp(rng, min=0.01)),
-                    ]
-                )
-            )
-        return torch.stack(base, 0), torch.stack(stats, 0).detach(), valid
+            center = v.median() if v.numel() > 100 else d.median()
+            base.append(d / torch.clamp(center, min=self.config.min_depth))
+        return torch.stack(base, 0), valid
 
     # ══════════════════════════════════════════════════════════════════════════
     # single-view forward
@@ -537,7 +475,8 @@ class EpiDistill(nn.Module):
             attn_out = self._rectified_epipolar(level, ref_view, rst_ref, K_base, (Hp, Wp))
 
             level_scale = self._level_scale_query(level, scale_state)
-            fused = torch.cat([self._prepend_scale(level_scale, 1), attn_out], dim=2)
+            # Single view: only the reference slot sits in the token sequence.
+            fused = torch.cat([level_scale[:, 0:1].unsqueeze(1), attn_out], dim=2)
             fused = self.output_norm(self.frame_blocks[level](
                 fused.reshape(B, -1, cfg.token_dim), pos=pos_post
             )).unsqueeze(1)
@@ -545,14 +484,14 @@ class EpiDistill(nn.Module):
             spatial = fused[:, :, 1:, :]                                   # CLS + patches
             src_kv = rst_ref.flatten(2).permute(0, 2, 1).unsqueeze(1)      # (B, 1, N, C)
             scale_state = self._scale_readout(
-                level, level_scale, spatial[:, :, 1:, :], src_spatial=src_kv
+                level, level_scale, spatial[:, :, 1:, :], src_kv
             )
             scale_history.append(scale_state)
             level_outputs.append(spatial[:, 0])                            # (B, 1+N, C)
 
         # ── 4. token read-outs ────────────────────────────────────────────────
         pooled = self._pool_scale_history(scale_history)
-        scale_token = pooled[:, 0, :] if pooled.dim() == 3 else pooled     # reference slot
+        scale_token = pooled[:, 0, :]                                      # reference slot
         cls_token = level_outputs[-1][:, 0, :]
 
         # ── 5. heads ──────────────────────────────────────────────────────────
@@ -564,16 +503,9 @@ class EpiDistill(nn.Module):
         K[:, 1, 2] = K_base[:, 1, 2]
         K[:, 2, 2] = 1.0
 
-        base_depth_norm, depth_stats, backbone_valid = self._base_statistics(depth)
-        focal_norm = torch.stack([K[:, 0, 0] / W, K[:, 1, 1] / H], dim=-1)
+        base_depth_norm, backbone_valid = self._base_statistics(depth)
         scale_token_n = F.layer_norm(scale_token, [scale_token.shape[-1]])
-
-        s_hat = self.scale_head(
-            scale_token_n,
-            focal_norm=focal_norm,
-            depth_stats=depth_stats if cfg.scale_use_depth_stats else None,
-            cls_token=cls_token if cfg.scale_use_cls else None,
-        )
+        s_hat = self.scale_head(scale_token_n)
 
         dpt_out = self.dpt_head(
             level_outputs,
@@ -586,7 +518,7 @@ class EpiDistill(nn.Module):
 
         # ── 6. fuse (Eq. 1) ───────────────────────────────────────────────────
         struct = self._compose_struct(base_depth_norm, delta_d)
-        struct_norm = self._struct_norm(struct, valid_mask=backbone_valid)
+        struct_norm = self._struct_norm(struct, backbone_valid)
         depth_adj = (struct / struct_norm) * s_hat.view(B, 1, 1, 1)
         depth_adj = torch.clamp(depth_adj, min=cfg.min_depth)
 

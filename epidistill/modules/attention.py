@@ -7,17 +7,10 @@
 #   https://github.com/facebookresearch/dino/blob/master/vision_transformer.py
 #   https://github.com/rwightman/pytorch-image-models/tree/master/timm/models/vision_transformer.py
 
-import logging
-import os
-import warnings
-
 import torch
 from torch import Tensor
 from torch import nn
 import torch.nn.functional as F
-
-XFORMERS_AVAILABLE = False
-
 
 class Attention(nn.Module):
     def __init__(
@@ -95,27 +88,6 @@ class Attention(nn.Module):
             x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
         x = x.transpose(1, 2).reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
-
-class MemEffAttention(Attention):
-    def forward(self, x: Tensor, attn_bias=None, pos=None) -> Tensor:
-        assert pos is None
-        if not XFORMERS_AVAILABLE:
-            if attn_bias is not None:
-                raise AssertionError("xFormers is required for using nested tensors")
-            return super().forward(x)
-
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
-
-        q, k, v = unbind(qkv, 2)
-
-        x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
-        x = x.reshape([B, N, C])
-
         x = self.proj(x)
         x = self.proj_drop(x)
         return x

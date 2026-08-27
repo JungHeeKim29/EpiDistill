@@ -79,26 +79,6 @@ def compute_fundamental_matrix(K_ref, K_src, T_ref2src):
     
     return F
 
-def get_epipole(K, T_ref2src):
-    """
-    Compute epipole in Ref image for a Virtual Source Camera.
-    """
-    R = T_ref2src[:, :3, :3]
-    t = T_ref2src[:, :3, 3:4]
-    
-    C_src_in_ref = - R.transpose(1, 2) @ t # (B, 3, 1)
-    
-    # Project to Image Plane: e = K * C_src
-    e_homo = K @ C_src_in_ref # (B, 3, 1)
-    
-    # Normalize
-    div = e_homo[:, 2, 0:1]
-    # Robust division
-    div = torch.where(div.abs() < 1e-5, torch.sign(div + 1e-9) * 1e-5, div)
-    e = e_homo[:, :2, 0] / div # (B, 2)
-    
-    return e
-
 def get_epipolar_lines_cross(K_ref, K_src, T_ref2src, p_ref):
     """
     Compute epipolar lines in Source Image for points p_ref in Ref Image.
@@ -203,197 +183,21 @@ def sample_lines_uniform(lines, H, W, num_samples):
     
     return points, valid_samples
 
-def sample_lines_guided(lines, H, W, num_samples, K_ref, K_src, T_ref2src, p_ref_homo, depth, depth_window=0.1):
-    """
-    Sample points along epipolar lines focusing on depth range.
-    """
-    B, _, N = lines.shape
-    device = lines.device
-    
-    # 1. Get Image Intersection (Maximal Segment)
-    p_img_start, p_img_end, valid_img, dx, dy = get_line_image_intersection(lines, H, W)
-    
-    # 2. Project Depth Interval
-    d_min = depth * (1.0 - depth_window)
-    d_max = depth * (1.0 + depth_window)
-    d_min = torch.clamp(d_min, min=1e-3)
-    d_max = torch.clamp(d_max, min=1e-3)
-    
-    # Project to Source
-    K_ref_inv = torch.inverse(K_ref)
-    Ray_ref = K_ref_inv @ p_ref_homo # (B, 3, N)
-    R = T_ref2src[:, :3, :3]
-    t = T_ref2src[:, :3, 3:4]
-    Ray_rot = R @ Ray_ref
-    
-    def normalize_homo(p_homo):
-        z = p_homo[:, 2:3, :]
-        valid_z = z > 1e-3
-        p = p_homo[:, :2, :] / (z + 1e-6)
-        return p, valid_z.squeeze(1)
-
-    # Project min/max depth
-    # Note: Inverse depth relationship means d_min might map to one end and d_max to other depending on motion?
-    # Actually, R*p*d + t. It's linear in d (along ray direction).
-    # But projection to pixel is non-linear.
-    
-    P_min = Ray_rot * d_min.unsqueeze(1) + t
-    P_max = Ray_rot * d_max.unsqueeze(1) + t
-    
-    p_d_min, valid_min = normalize_homo(K_src @ P_min) # (B, 2, N)
-    p_d_max, valid_max = normalize_homo(K_src @ P_max) # (B, 2, N)
-    
-    # Transpose to (B, N, 2)
-    p_d_min = p_d_min.permute(0, 2, 1)
-    p_d_max = p_d_max.permute(0, 2, 1)
-    
-    # We have 2 points from depth. They define a segment (or ray segment).
-    # Project all 4 points to 1D line coordinate for interval intersection
-    # axis: (dx, dy)
-    def proj_1d(p):
-        return p[..., 0] * dx + p[..., 1] * dy
-        
-    t_img_start = proj_1d(p_img_start) # (B, N)
-    t_img_end   = proj_1d(p_img_end)
-    
-    # Re-order image bounds so t_start <= t_end
-    t_img_min = torch.min(t_img_start, t_img_end)
-    t_img_max = torch.max(t_img_start, t_img_end)
-    
-    t_d1 = proj_1d(p_d_min)
-    t_d2 = proj_1d(p_d_max)
-    
-    # Re-order depth bounds
-    t_d_min = torch.min(t_d1, t_d2)
-    t_d_max = torch.max(t_d1, t_d2)
-    
-    # Handle invalid depth projection (e.g. zero/negative depth in sparse GT)
-    # If depth is invalid (< 1e-3), we should rely ONLY on image bounds (fallback to uniform)
-    # We accomplish this by setting depth interval to [-inf, inf] for those invalid points
-    
-    is_valid_d_val = depth > 1e-3
-    
-    t_d_min = torch.where(is_valid_d_val, t_d_min, torch.tensor(-float('inf'), device=device))
-    t_d_max = torch.where(is_valid_d_val, t_d_max, torch.tensor(float('inf'), device=device))
-    
-    # Also valid_depth flag from projection shouldn't kill the line if we modify the interval
-    # If depth val was invalid, we don't care if p_d_min/max were valid projections (they are likely garbage)
-    # So we override valid_depth to True for those cases (since we are ignoring the depth interval)
-    
-    valid_depth = torch.where(is_valid_d_val, valid_min & valid_max, torch.ones_like(valid_min, dtype=torch.bool))
-
-    # Intersect Intervals [t_img_min, t_img_max] AND [t_d_min, t_d_max]
-    t_start = torch.max(t_img_min, t_d_min)
-    t_end   = torch.min(t_img_max, t_d_max)
-    
-    # Check emptiness
-    valid_interval = (t_end > t_start) & valid_depth & valid_img
-    
-    # Fallback to full valid image line if depth intersection is empty/invalid
-    # (Optional: Or assume bad depth -> no attention)
-    # Let's fallback to image bounds to simulate "high uncertainty" if depth projection fails?
-    # User asked to use GT depth. If GT is invalid/behind, we shouldn't attend?
-    # But usually GT is valid.
-    # If intersection is empty (depth range is outside image), valid_interval is False.
-    
-    # However, if t_start > t_end, we have 0 samples. 
-    # Let's just clamp t_start/end to image bounds if we want to force valid.
-    # But strictly, we should respect the depth.
-    
-    # Reconstruct points from t
-    # p(t) = (x,y) -> not easy unless we have a point on line.
-    
-    # Better: Interpolate between the computed 2D points corresponding to t_start/t_end.
-    # We know p_img_start corresponds to t_img_start/end (unordered).
-    # We need a reference point on the line.
-    # p_on_line = p_img_start.
-    # direction vector v = (dx, dy)? No, line is ax+by+c=0. Normal is (a,b). Direction is (-b, a) = (dx, dy).
-    # Yes.
-    # So p(alpha) = p_ref + alpha * (dx, dy)
-    
-    # But we projected p onto (dx, dy).
-    # t = p . d
-    # p(t)?
-    # Since |d|^2 might not be 1.
-    # d = (-b, a). a^2+b^2=1? Yes, in get_epipolar_lines_cross we normalized it.
-    # So |d|=1.
-    # Then p(t) = p_origin + t * d  is NOT quite right because t includes p_origin offset.
-    # Correct: p(t) = (t_start * d) ?? No.
-    
-    # We can just interpolate between the 2D points we found!
-    # We have 4 candidates for endpoints: p_img_start, p_img_end, p_d_min, p_d_max.
-    # We selected t limits.
-    # We need to map t back to 2D.
-    # Or just select the 2D points corresponding to t_start and t_end.
-    
-    # We know which points generated t_d_min/max and t_img_min/max.
-    # t_d_min came from either p_d_min or p_d_max.
-    # Let's just pick the points.
-    
-    # Simplified logic:
-    # We have segment [p_img_min, p_img_max] (ordered by t)
-    # We have segment [p_d_min, p_d_max] (ordered by t)
-    # Intersection is [max(start), min(end)].
-    
-    # Sort Image Points
-    mask_img_swap = t_img_start > t_img_end
-    p_img_1 = torch.where(mask_img_swap.unsqueeze(-1), p_img_end, p_img_start)
-    p_img_2 = torch.where(mask_img_swap.unsqueeze(-1), p_img_start, p_img_end)
-    
-    # Sort Depth Points
-    mask_d_swap = t_d1 > t_d2
-    p_d_1 = torch.where(mask_d_swap.unsqueeze(-1), p_d_max, p_d_min)
-    p_d_2 = torch.where(mask_d_swap.unsqueeze(-1), p_d_min, p_d_max)
-    
-    # Intersect
-    # Start = max(img_1, d_1) -> pick point with larger t
-    mask_start_d = t_d_min > t_img_min
-    p_start = torch.where(mask_start_d.unsqueeze(-1), p_d_1, p_img_1)
-    
-    # End = min(img_2, d_2) -> pick point with smaller t
-    mask_end_d = t_d_max < t_img_max
-    p_end = torch.where(mask_end_d.unsqueeze(-1), p_d_2, p_img_2)
-    
-    # Debug Prints (First batch, middle pixel)
-    # if True:
-    #     idx = N // 2
-    #     print(f"DEBUG: t_img [{t_img_min[0, idx]:.2f}, {t_img_max[0, idx]:.2f}]")
-    #     print(f"DEBUG: t_d   [{t_d_min[0, idx]:.2f}, {t_d_max[0, idx]:.2f}]")
-    #     print(f"DEBUG: t_int [{torch.max(t_img_min, t_d_min)[0, idx]:.2f}, {torch.min(t_img_max, t_d_max)[0, idx]:.2f}]")
-
-    # Check validity again (t_start < t_end)
-    valid_final = valid_interval # (B, N)
-    
-    # Handle fully invalid
-    p_start[~valid_final] = 0.0
-    p_end[~valid_final] = 0.0
-    
-    # Interpolate
-    t_samp = torch.linspace(0, 1, num_samples, device=device).view(1, 1, num_samples, 1)
-    points = p_start.unsqueeze(2) * (1 - t_samp) + p_end.unsqueeze(2) * t_samp
-    
-    # Clamp/Sanitize
-    points = torch.nan_to_num(points, nan=0.0, posinf=1e4, neginf=-1e4)
-    
-    valid_samples = valid_final.unsqueeze(-1).expand(-1, -1, num_samples)
-    
-    return points, valid_samples
-
 def get_epipolar_sampling_grid(
     query_coords,
     K_ref,
     K_src,
     T_ref2src,
-    img_shape, # (H_s, W_s)
+    img_shape,          # (H_s, W_s)
     num_samples=32,
-    depth=None,
-    mode='cross',
-    depth_window=2.0,
-    #0.1
 ):
-    """
-    Generate sampling grid (B, H, W, S, 2) for Epipolar Attention.
-    Values are normalized to [-1, 1] for grid_sample.
+    """Sampling grid (B, H, W, S, 2) for the epipolar attention, in [-1, 1].
+
+    ``num_samples`` points are spread uniformly along the visible segment of each
+    query's epipolar line (Eq. 2).  The depth guidance of Eq. 3-4 does NOT narrow
+    this sampling range -- it enters as the spatial bias B_ij on the attention
+    logits, so the model still sees the whole line and only its *attention* is
+    concentrated.
     """
     if query_coords.dim() == 4:
         B, H, W, _ = query_coords.shape
@@ -404,39 +208,13 @@ def get_epipolar_sampling_grid(
         H = img_shape[0] if img_shape else int(math.sqrt(N))
         W = img_shape[1] if img_shape else int(math.sqrt(N))
     device = query_coords.device
-    
-    if mode == 'cross':
-        # Flatten query coords
-        p_ref_pix = query_coords.view(B, H*W, 2).permute(0, 2, 1) # (B, 2, N)
-        
-        # Homogeneous coordinates
-        ones = torch.ones(B, 1, H*W, device=device)
-        p_ref = torch.cat([p_ref_pix, ones], dim=1) # (B, 3, N)
-        
-        # Compute Epipolar Lines passing through Source Image
-        lines = get_epipolar_lines_cross(K_ref, K_src, T_ref2src, p_ref) # (B, 3, N)
-        
-        if depth is not None:
-             if depth.dim() == 4: # (B, 1, H, W)
-                 depth_flat = depth.view(B, -1) # (B, N)
-             elif depth.dim() == 3: # (B, H, W)
-                 depth_flat = depth.view(B, -1)
-             else:
-                 depth_flat = depth # Assume acceptable shape
 
-             # Always use uniform sampling across full epipolar line
-             # Depth-biased attention (apply_depth_bias) handles focusing on GT projection
-             sampling_points_pix, valid_samples = sample_lines_uniform(lines, img_shape[0], img_shape[1], num_samples)
-        else:
-            sampling_points_pix, valid_samples = sample_lines_uniform(lines, img_shape[0], img_shape[1], num_samples) # (B, N, S, 2)
-        grid = sampling_points_pix
-        
-    elif mode == 'self':
-        # Placeholder for self-attention epipole logic provided in original
-        # For robustness, fallback to identity sampling if not strictly required or use similar logic if needed.
-        # Assuming similar logic but generating lines from Epipole -> Pixel
-        # (This path was not active in crash reports, focusing cleanup on 'cross')
-        raise NotImplementedError("Self-attention mode cleanup pending.")
+    p_ref_pix = query_coords.view(B, H * W, 2).permute(0, 2, 1)          # (B, 2, N)
+    ones = torch.ones(B, 1, H * W, device=device)
+    p_ref = torch.cat([p_ref_pix, ones], dim=1)                          # (B, 3, N)
+
+    lines = get_epipolar_lines_cross(K_ref, K_src, T_ref2src, p_ref)     # (B, 3, N)
+    grid, valid_samples = sample_lines_uniform(lines, img_shape[0], img_shape[1], num_samples)
 
     # Reshape to spatial (B, H, W, S, 2)
     grid = grid.view(B, H, W, num_samples, 2)
@@ -468,10 +246,6 @@ class DepthGuidedEpipolarAttention(nn.Module):
         self.v_proj = nn.Linear(dim, dim)
         self.o_proj = nn.Linear(dim, dim)
         
-        self.last_attn = None
-        self.last_grid = None
-        self.attn_history = []
-        
 
     def forward(
         self,
@@ -482,7 +256,6 @@ class DepthGuidedEpipolarAttention(nn.Module):
         K_src,      # (B, 3, 3)
         T_ref2src,  # (B, 4, 4)
         depth=None,
-        mode='cross',
         rectified=False, # New argument
         pos=None, # Position Encoding
         apply_depth_bias=False, # New argument: Bias attention towards projected depth
@@ -492,13 +265,13 @@ class DepthGuidedEpipolarAttention(nn.Module):
             return torch.utils.checkpoint.checkpoint(
                 self._forward_impl,
                 query_feat, key_feat, value_feat,
-                K_ref, K_src, T_ref2src, depth, mode, rectified, pos, apply_depth_bias, return_matching_loss,
+                K_ref, K_src, T_ref2src, depth, rectified, pos, apply_depth_bias, return_matching_loss,
                 use_reentrant=False
             )
         else:
-            return self._forward_impl(query_feat, key_feat, value_feat, K_ref, K_src, T_ref2src, depth, mode, rectified, pos, apply_depth_bias, return_matching_loss)
+            return self._forward_impl(query_feat, key_feat, value_feat, K_ref, K_src, T_ref2src, depth, rectified, pos, apply_depth_bias, return_matching_loss)
 
-    def _forward_impl(self, query_feat, key_feat, value_feat, K_ref, K_src, T_ref2src, depth, mode, rectified, pos, apply_depth_bias, return_matching_loss):
+    def _forward_impl(self, query_feat, key_feat, value_feat, K_ref, K_src, T_ref2src, depth, rectified, pos, apply_depth_bias, return_matching_loss):
         B, C, H, W = query_feat.shape
         H_s, W_s = key_feat.shape[-2:]
         
@@ -539,8 +312,6 @@ class DepthGuidedEpipolarAttention(nn.Module):
                 K_ref, K_src, T_ref2src,
                 img_shape=(H_s, W_s),
                 num_samples=self.num_samples,
-                depth=depth,
-                mode=mode
             ) # (B, H, W, S, 2)
         
         # Robustness: NaN check and Fix
@@ -662,7 +433,7 @@ class DepthGuidedEpipolarAttention(nn.Module):
         # --- GT Depth Bias Injection ---
         # Guard: skip depth bias entirely if K_ref is singular (near-zero fx/fy)
         _k_ref_ok = (K_ref.diagonal(dim1=-2, dim2=-1)[:, :2].abs() > 1e-6).all()
-        if apply_depth_bias and depth is not None and mode == 'cross' and not rectified and _k_ref_ok:
+        if apply_depth_bias and depth is not None and not rectified and _k_ref_ok:
              # Calculate Bias based on distance to Projected GT Depth
              # sampling_grid: (B, H, W, S, 2) in Normalized Coords [-1, 1]
              # depth: (B, H*W) or (B, H, W)
@@ -801,25 +572,6 @@ class DepthGuidedEpipolarAttention(nn.Module):
         # We want the resulting value-aggregation to be 0.
         attn = attn.masked_fill(~any_valid, 0.0)
 
-        # Store for visualization (detach to save memory/graph)
-        # Store for visualization (detach to save memory/graph)
-        # We store history to capture multiple calls (Teacher/Student, Src1/Src2)
-        if not hasattr(self, 'attn_history'):
-            self.attn_history = []
-        
-        # Limit history size to prevent memory leaks during long training if not cleared
-        if len(self.attn_history) > 100:
-            self.attn_history.pop(0)
-            
-        self.attn_history.append({
-            'attn': attn.detach().cpu(),
-            'grid': sampling_grid.detach().cpu(),
-            'rectified': rectified
-        })
-        
-        self.last_grid = sampling_grid.detach().cpu()
-        self.last_attn = attn.detach().cpu()
-        
         # Output: (B, nH, N, 1, S) @ (B, nH, N, S, d) -> (B, nH, N, 1, d)
         out = attn @ v
         
@@ -829,19 +581,7 @@ class DepthGuidedEpipolarAttention(nn.Module):
         # Output Projection: (B, H, W, C) -> (B, C, H, W)
         out = self.o_proj(out).permute(0, 3, 1, 2)
         
-        # Final Robustness
-        # Hook for gradient clamping: prevent explosion in backward pass
-        if out.requires_grad:
-             # Handle case where grad can be None (e.g., when tensor is not connected to loss)
-             def safe_grad_hook(grad):
-                 if grad is None:
-                     return None
-                 return torch.nan_to_num(grad, nan=0.0, posinf=1e4, neginf=-1e4)
-             out.register_hook(safe_grad_hook)
-
-        if torch.isnan(out).any() or torch.isinf(out).any():
-             out = torch.nan_to_num(out, nan=0.0, posinf=1e4, neginf=-1e4)
-             out = torch.clamp(out, min=-1e4, max=1e4)
+        out = torch.nan_to_num(out, nan=0.0, posinf=1e4, neginf=-1e4).clamp(-1e4, 1e4)
 
         if return_matching_loss:
             return out, matching_loss

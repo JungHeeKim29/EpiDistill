@@ -18,10 +18,10 @@ import torch.utils.checkpoint
 class CrossViewScaleAggregation(nn.Module):
     """Scale token (query) attends to spatial tokens (key/value).
 
-    In the multi-view teacher the key/value set is every view's post-epipolar
-    spatial tokens; at single-view inference it is the reference view's own
-    tokens and the reference-guided rectified stereo tokens T_rst-ref.  The
-    update is a gated residual so the token is preserved at initialisation.
+    At single-view inference the key/value set is either the reference view's own
+    post-epipolar tokens or the reference-guided rectified stereo tokens
+    T_rst-ref, depending on which scale slot is querying.  The update is a gated
+    residual, so the token is preserved at initialisation.
     """
 
     def __init__(self, dim: int = 1024, num_heads: int = 8):
@@ -41,15 +41,11 @@ class CrossViewScaleAggregation(nn.Module):
         self.gate = nn.Sequential(nn.Linear(dim, dim), nn.Sigmoid())
         nn.init.constant_(self.gate[0].bias, -2.0)
 
-    def forward(self, scale_token, views_spatial, valid_mask=None, include_ref: bool = True):
+    def forward(self, scale_token, views_spatial):
         """
         Args:
-            scale_token:   (B, Q, C) -- Q query slots (1 = reference-only, 2 = ref + source).
-            views_spatial: (B, V, N, C) -- key/value tokens, view 0 = reference.
-            valid_mask:    (B, N_src) -- per-source-view validity (1 = real view).
-            include_ref:   whether ``views_spatial[:, 0]`` is the reference view.  False when
-                           the caller already sliced the sources out, so ``valid_mask`` lines
-                           up with the views one-for-one.
+            scale_token:   (B, Q, C) -- the querying scale slot(s).
+            views_spatial: (B, V, N, C) -- key/value tokens.
         Returns:
             (B, Q, C) updated scale token.
         """
@@ -65,19 +61,7 @@ class CrossViewScaleAggregation(nn.Module):
         k = k.view(B, V * N, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.view(B, V * N, self.num_heads, self.head_dim).transpose(1, 2)
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-
-        if valid_mask is not None:
-            if include_ref:
-                ref_valid = torch.ones(B, 1, device=scale_token.device, dtype=valid_mask.dtype)
-                full_vmask = torch.cat([ref_valid, valid_mask], dim=1)      # (B, V)
-            else:
-                full_vmask = valid_mask[:, :V]
-            token_mask = full_vmask.unsqueeze(-1).expand(B, V, N).reshape(B, 1, 1, V * N)
-            attn = attn.masked_fill(~token_mask.bool(), float("-inf"))
-
-        attn = attn.softmax(dim=-1)
-        attn = torch.nan_to_num(attn, nan=0.0)          # all-invalid rows
+        attn = ((q @ k.transpose(-2, -1)) * self.scale).softmax(dim=-1)
 
         out = (attn @ v).transpose(1, 2).reshape(B, Q, C)
         out = self.o_proj(out)
