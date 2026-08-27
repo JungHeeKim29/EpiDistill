@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "epidistill"
+version = "0.1.0"
+description = "Geometric Distillation from Rectified Stereo: Leveraging Epipolar Cues for Monocular Depth"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Jung-Hee Kim" }, { name = "Xiaoming Liu" }]
+dependencies = [
+    "torch>=2.1",
+    "torchvision>=0.16",
+    "numpy>=1.24",
+    "pillow>=9.0",
+    "tqdm>=4.65",
+]
+
+[tool.setuptools.packages.find]
+include = ["epidistill*"]
+
+[tool.ruff]
+line-length = 100

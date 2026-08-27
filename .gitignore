@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+.ipynb_checkpoints/
+
+# weights and packed evaluation data are distributed separately
+weights/
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.pkl.gz
+third_party/DepthPro/checkpoints/
+
+# local outputs
+out/
+outputs/
+runs/
+data/

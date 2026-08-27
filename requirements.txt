@@ -1,0 +1,11 @@
+# Install a torch build matching your CUDA first, e.g.
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+torch>=2.1
+torchvision>=0.16
+numpy>=1.24
+pillow>=9.0
+tqdm>=4.65
+matplotlib>=3.7          # demo colourisation only
+huggingface-hub>=0.20    # UniDepthV2 weight download
+einops>=0.7              # required by the vendored backbones
+timm>=0.9                # required by DepthPro's ViT factory

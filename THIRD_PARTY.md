@@ -1,0 +1,35 @@
+# Third-party code and licences
+
+## Vendored under `third_party/`
+
+### UniDepth (`third_party/UniDepth`)
+Piccinelli et al., *UniDepthV2: Universal Monocular Metric Depth Estimation Made
+Simpler*. Source: https://github.com/lpiccinelli-eth/UniDepth
+Licence: **Creative Commons Attribution-NonCommercial 4.0 International
+(CC BY-NC 4.0)** — see `third_party/UniDepth/LICENSE`.
+
+> Because UniDepth is non-commercial, any use of EpiDistill **with the UniDepthV2
+> backbone** inherits that restriction.
+
+### DepthPro (`third_party/DepthPro`)
+Bochkovskii et al., *Depth Pro: Sharp Monocular Metric Depth in Less Than a Second*.
+Source: https://github.com/apple/ml-depth-pro
+Licence: Apple's licence, as published in that repository.
+
+> **TODO before publishing:** copy `LICENSE` from `apple/ml-depth-pro` into
+> `third_party/DepthPro/LICENSE`. Model weights (`depth_pro.pt`) are **not**
+> redistributed here; download them from the upstream repository.
+
+## Derived source files
+
+| File | Origin | Licence |
+|---|---|---|
+| `epidistill/modules/{attention,block,layer_scale,drop_path,mlp}.py` | DINOv2 (Meta) | Apache-2.0 |
+| `epidistill/modules/rope.py` | RoPE-2D, as used by VGGT / DINOv2 derivatives | Apache-2.0 |
+| `epidistill/heads/dpt_head.py` | DPT (Intel ISL) | MIT |
+
+## EpiDistill's own code
+
+**TODO before publishing:** add a top-level `LICENSE`. Note that the UniDepth
+CC BY-NC term above constrains what the combined distribution can be released
+under.
