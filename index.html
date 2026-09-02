@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="description" content="Geometric Distillation from Rectified Stereo">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EpiDistill: Geometric Distillation from Rectified Stereo</title>
+  <meta property="og:title" content="EpiDistill: Geometric Distillation from Rectified Stereo">
+  <meta property="og:description" content="Transferring the scale-aware geometric priors of multi-view models into monocular metric depth foundation models.">
+  <meta property="og:url" content="https://jungheekim29.github.io/EpiDistill/">
+  <meta property="og:image" content="https://jungheekim29.github.io/EpiDistill/assets/figures/Figure1.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
+  <style>
+    /* the few things Bulma does not give us */
+    .bg-light { background-color: #f7f7f9; }
+    .publication-authors, .publication-institutions { margin-top: .5rem; }
+    .publication-institutions { color: #7a7a7a; }
+    .author-block, .institution-block { white-space: nowrap; }
+
+    figure.image-block { margin: 0; }
+    figure.image-block img, figure.image-block video {
+      display: block; width: 100%; border: 1px solid #e5e5e8; border-radius: 4px; background: #fff;
+    }
+    figure.image-block img { cursor: zoom-in; }
+    figure.image-block figcaption { margin-top: .6rem; font-size: .88rem; line-height: 1.5; color: #5b5b66; }
+    figure.image-block figcaption .fig-id { font-weight: 700; color: #363636; }
+
+    /* tables */
+    table.results { font-variant-numeric: tabular-nums; font-size: .8rem; }
+    table.results th, table.results td { text-align: right; white-space: nowrap; vertical-align: bottom; padding: .35em .5em; }
+    table.results th:first-child, table.results td:first-child { text-align: left; }
+    table.results thead tr:first-child th { text-align: center; }
+    table.results thead tr:first-child th:first-child { text-align: left; }
+    table.results td.best { font-weight: 700; color: #1f1f27; }
+    table.results td.second { text-decoration: underline; text-underline-offset: 3px; }
+    table.results tr.ours td { background-color: #fdeef4; }
+    table.results tr.ours td:first-child { font-style: italic; color: #b0245d; box-shadow: inset 2px 0 0 #b0245d; }
+    table.results tr.gtk td { color: #9a9aa5; }
+    .table-note { font-size: .85rem; color: #7a7a7a; margin-top: .6rem; }
+
+    /* horizontally paged slider */
+    .slider { position: relative; }
+    .slider-track {
+      display: flex; align-items: flex-start;
+      overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory;
+      scroll-behavior: smooth; -webkit-overflow-scrolling: touch;
+      scrollbar-width: none; transition: height .25s ease;
+    }
+    .slider-track::-webkit-scrollbar { display: none; }
+    .slider-track > .slide { flex: 0 0 100%; min-width: 100%; scroll-snap-align: start; padding: 0 2px; }
+    .slide-title {
+      font-size: .78rem; letter-spacing: .1em; text-transform: uppercase;
+      color: #b0245d; font-weight: 600; margin-bottom: .5rem;
+    }
+    .slide-scroll { overflow-x: auto; }
+    /* keep a tall figure from dictating the height of every other slide */
+    .slide figure.image-block img, .slide figure.image-block video {
+      max-height: 640px; width: auto; max-width: 100%; margin-inline: auto;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .slider-track { transition: none; scroll-behavior: auto; }
+    }
+    .slider-nav { display: flex; align-items: center; justify-content: center; gap: .75rem; margin-top: 1rem; }
+    .slider-nav .dots { display: flex; gap: .4rem; }
+    .slider-nav .dot {
+      width: 8px; height: 8px; border-radius: 50%; border: 0; padding: 0;
+      background: #d5d5dd; cursor: pointer;
+    }
+    .slider-nav .dot[aria-current="true"] { background: #b0245d; }
+    .slider-nav .arrow {
+      border: 1px solid #dbdbdb; background: #fff; border-radius: 999px;
+      width: 2rem; height: 2rem; line-height: 1; cursor: pointer; color: #4a4a4a; font-size: 1rem;
+    }
+    .slider-nav .arrow:hover { border-color: #b0245d; color: #b0245d; }
+    .slider-nav .arrow[disabled] { opacity: .35; cursor: default; }
+    .slider-nav .counter { font-size: .8rem; color: #7a7a7a; min-width: 3.5rem; text-align: center; }
+
+    /* lightbox */
+    #lightbox { position: fixed; inset: 0; z-index: 90; background: rgba(250,250,252,.97);
+                display: flex; align-items: center; justify-content: center; padding: 2rem; }
+    #lightbox[hidden] { display: none; }
+    #lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-out; }
+    #lightbox .close { position: absolute; top: 1rem; right: 1rem; }
+  </style>
+</head>
+<body>
+
+<section class="hero">
+  <div class="hero-body">
+    <div class="container is-max-desktop has-text-centered">
+      <p class="is-size-7 has-text-grey mb-3" style="letter-spacing:.12em">ECCV 2026 &nbsp;·&nbsp; MALMÖ &nbsp;·&nbsp; SEPT 8–12</p>
+      <h1 class="title is-1">Geometric Distillation from Rectified Stereo:<br>Leveraging Epipolar Cues for Monocular Depth</h1>
+      <div class="is-size-5 publication-authors">
+        <span class="author-block"><a href="https://jungheekim29.github.io/">Jung-Hee Kim</a><sup>1</sup>,</span>
+        <span class="author-block"><a href="https://www.cse.msu.edu/~liuxm/">Xiaoming Liu</a><sup>1,2</sup></span>
+      </div>
+      <div class="is-size-5 publication-institutions">
+        <span class="institution-block"><sup>1</sup>Michigan State University,</span>
+        <span class="institution-block"><sup>2</sup>University of North Carolina at Chapel Hill</span>
+      </div>
+      <div class="buttons is-centered mt-4">
+        <a class="button is-dark is-rounded" href="https://arxiv.org/abs/2607.15600">arXiv</a>
+        <a class="button is-dark is-rounded" href="https://github.com/JungHeeKim29/EpiDistill">Code</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section pt-0">
+  <div class="container is-max-widescreen">
+    <figure class="image-block">
+      <video autoplay loop muted playsinline width="100%"
+             poster="assets/videos/facade_sweep_poster.jpg">
+        <source src="assets/videos/facade_sweep.mp4" type="video/mp4">
+      </video>
+      <figcaption class="has-text-centered">
+        ETH3D — Ground Truth · UniDepthV2 · UniDepthV2 + EpiDistill · DepthAnything3 (SV) · DepthAnything3 (MV).
+      </figcaption>
+    </figure>
+    <figure class="image-block mt-5">
+      <video autoplay loop muted playsinline width="100%"
+             poster="assets/videos/kitti_sweep_poster.jpg">
+        <source src="assets/videos/kitti_sweep.mp4" type="video/mp4">
+      </video>
+      <figcaption class="has-text-centered">
+        KITTI — Ground Truth · UniDepthV2 · UniDepthV2 + EpiDistill · DepthAnything3 (SV) · DepthAnything3 (MV).
+      </figcaption>
+    </figure>
+    <p class="subtitle is-6 has-text-centered mt-5">
+      EpiDistill enables single-view models to inherit the scale robustness of multi-view geometry, achieving precise
+      3D scene reconstruction without requiring multi-view inputs at inference.
+    </p>
+  </div>
+</section>
+
+<section class="section bg-light">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered">Abstract</h2>
+    <div class="content has-text-justified">
+      <p>
+        Monocular depth foundation models have demonstrated remarkable generalization capabilities across diverse
+        environments. However, they continue to struggle with metric depth estimation. This limitation stems from the
+        inherent scale ambiguity of single-view inference, leading to misaligned scale predictions even when the
+        relative geometry is accurate. Conversely, recent multi-view foundation models leverage cross-view cues to
+        learn robust scene-level geometry and consistent scale. Yet, these benefits typically vanish during
+        single-image inference, as the absence of explicit geometric constraints causes performance to degrade.
+      </p>
+      <p>
+        To bridge this gap, we propose a novel framework that transfers the scale-aware geometric priors of multi-view
+        models into monocular depth foundation models. Specifically, we introduce <strong>Epipolar Distillation
+        (EpiDistill)</strong>, an approach utilizing <strong>Rectified Stereo Tokens</strong>, which enables the
+        single-view prediction model to retain epipolar attention patterns and maintain geometric consistency without
+        requiring multi-view inputs at inference. Experimental results demonstrate that our method significantly
+        improves zero-shot metric depth estimation, particularly on challenging datasets like ETH3D and DIODE where
+        scale alignment is critical. Furthermore, our approach is model-agnostic, consistently boosting the performance
+        of state-of-the-art ViT-based models, including UniDepthV2 and DepthPro.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3">Why Do Multi-view Models Collapse in Single-view?</h2>
+    <figure class="image-block">
+      <img src="assets/figures/Figure1.jpg" alt="3D scene reconstruction on ScanNet++" loading="lazy" />
+      <figcaption>
+        <span class="fig-id">Figure 1.</span> 3D scene reconstruction on ScanNet++. Point clouds accumulated across
+        multiple sequential frames using single-view (SV) and multi-view (MV) methods, with F1 (↑) and Chamfer
+        distance (↓) on the test set.
+      </figcaption>
+    </figure>
+
+    <div class="columns is-vcentered mt-5">
+      <div class="column">
+        <figure class="image-block">
+          <img src="assets/figures/Figure2.png" alt="Structural collapse of cross-view attention" loading="lazy" />
+        </figure>
+      </div>
+      <div class="column">
+        <p class="content">
+          Restricted to single-view inputs, global cross-view pathways degrade immediately into standard
+          self-attention, creating a critical geometry mismatch between training and inference. Vital metric scale
+          priors are lost. EpiDistill preserves this structural integrity by pairing depth-guided epipolar attention
+          with rectified stereo tokens.
+        </p>
+      </div>
+    </div>
+    <figure class="image-block mt-3">
+      <figcaption>
+        <span class="fig-id">Figure 2.</span> Geometric ambiguity in single-view inference. In standard architectures the
+        global attention layer collapses into intra-frame self-attention when deprived of auxiliary views.
+      </figcaption>
+    </figure>
+
+  </div>
+</section>
+
+<section class="section bg-light">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3">EpiDistill Framework</h2>
+
+    <figure class="image-block mb-5">
+      <img src="assets/figures/Figure3.png" alt="EpiDistill overview" loading="lazy" />
+      <figcaption>
+        <span class="fig-id">Figure 3.</span> Overview. <em>(Top)</em> The multi-view branch extracts geometric priors
+        via frame attention and depth-guided epipolar attention. <em>(Bottom)</em> The single-view branch employs the
+        shared layers but leverages Rectified Stereo Tokens as geometric guidance. The dashed green region is all that
+        runs at inference.
+      </figcaption>
+    </figure>
+
+    <div class="content has-text-justified">
+      <p>
+        <strong>Training.</strong> The multi-view branch receives a reference image together with overlapping source
+        views. Its epipolar attention restricts each reference query to tokens sampled along the corresponding
+        epipolar line in the source view. The attention is supervised against a depth-guided target, so that the layer
+        learns to localize 3D correspondences rather than merely to sample the line.
+      </p>
+      <p>
+        <strong>Inference.</strong> The single-view branch reuses the same shared layers, substituting the missing
+        source view with a learnable grid of Rectified Stereo Tokens. For a rectified stereo pair the rotation is
+        identity and the baseline purely horizontal, so the epipolar geometry reduces to a single horizontal scanline
+        that is independent of the baseline. Cross-attention with the reference features conditions the grid on the
+        scene, and the shared epipolar layers operate on it as they do during training. A distillation term aligns the
+        single-view tokens with their multi-view counterparts, transferring the geometric prior.
+      </p>
+    </div>
+
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-widescreen">
+    <h2 class="title is-3">Results — Zero-shot Metric Depth</h2>
+    <p class="content">
+      Evaluated against Metric3Dv2, UniDepthV1, UniK3D, MoGe-2 and DepthAnything3 under the UniDepthV2 protocol with
+      identical depth caps and valid-region masks. <strong>Bold</strong> = best and <u>underline</u> = second best
+      among image-only models; <sup>†</sup> uses ground-truth intrinsics at inference.
+    </p>
+
+    <div class="slider" data-slider>
+      <div class="slider-track">
+        <div class="slide">
+          <p class="slide-title">Table 1 — Outdoor &amp; mixed</p>
+          <div class="slide-scroll">
+            <table class="table is-fullwidth is-narrow is-hoverable results">
+              <thead>
+                <tr>
+                  <th rowspan="2">Method</th>
+                  <th colspan="2">KITTI</th><th colspan="2">DDAD</th><th colspan="2">DIODE</th><th colspan="2">ETH3D</th>
+                  <th rowspan="2">Rank ↓</th>
+                </tr>
+                <tr>
+                  <th>A.Rel ↓</th><th>δ₁ ↑</th><th>A.Rel ↓</th><th>δ₁ ↑</th>
+                  <th>A.Rel ↓</th><th>δ₁ ↑</th><th>A.Rel ↓</th><th>δ₁ ↑</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="gtk"><td>Metric3DV2<sup>†</sup></td><td>0.054</td><td>0.975</td><td>0.122</td><td>0.858</td><td>0.536</td><td>0.077</td><td>0.175</td><td>0.724</td><td>4.5</td></tr>
+                <tr class="gtk"><td>DepthAnything3<sup>†</sup></td><td>0.097</td><td>0.910</td><td>0.137</td><td>0.828</td><td>0.489</td><td>0.110</td><td>0.122</td><td>0.861</td><td>4.8</td></tr>
+                <tr><td>UniDepthV1</td><td class="best">0.049</td><td class="best">0.980</td><td>0.217</td><td>0.708</td><td class="best">0.263</td><td>0.624</td><td>0.530</td><td>0.224</td><td>4.8</td></tr>
+                <tr><td>UniK3D</td><td>0.123</td><td>0.940</td><td>0.156</td><td class="second">0.859</td><td>0.457</td><td class="best">0.686</td><td>0.139</td><td class="second">0.852</td><td class="second">4.0</td></tr>
+                <tr><td>MoGe-2</td><td>0.132</td><td>0.867</td><td>0.168</td><td>0.776</td><td>0.407</td><td>0.368</td><td class="best">0.109</td><td class="best">0.911</td><td>5.3</td></tr>
+                <tr><td>DepthPro</td><td>0.141</td><td>0.838</td><td>0.391</td><td>0.233</td><td class="second">0.386</td><td>0.419</td><td>0.355</td><td>0.433</td><td>8.8</td></tr>
+                <tr class="ours"><td>+ EpiDistill</td><td>0.123</td><td>0.875</td><td>0.348</td><td>0.353</td><td>0.357</td><td>0.462</td><td>0.354</td><td>0.393</td><td>6.4</td></tr>
+                <tr><td>UniDepthV2</td><td>0.080</td><td>0.945</td><td class="second">0.144</td><td class="best">0.859</td><td>0.716</td><td>0.549</td><td>0.176</td><td>0.752</td><td>4.7</td></tr>
+                <tr class="ours"><td>+ EpiDistill</td><td class="second">0.074</td><td class="second">0.951</td><td class="best">0.132</td><td>0.854</td><td>0.396</td><td class="second">0.641</td><td class="second">0.137</td><td>0.779</td><td class="best">3.1</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="table-note">
+            DIODE A.Rel falls 44.7% and ETH3D 22.2% on UniDepthV2. UniDepthV2 + EpiDistill takes the best overall rank
+            (3.1), ahead of every method here including the two that are handed the camera.
+          </p>
+        </div>
+
+        <div class="slide">
+          <p class="slide-title">Table 2 — Indoor</p>
+          <div class="slide-scroll">
+            <table class="table is-fullwidth is-narrow is-hoverable results">
+              <thead>
+                <tr>
+                  <th rowspan="2">Method</th>
+                  <th colspan="2">NYU</th><th colspan="2">Bonn</th><th colspan="2">Booster</th><th colspan="2">IBims-1</th>
+                  <th rowspan="2">Rank ↓</th>
+                </tr>
+                <tr>
+                  <th>A.Rel ↓</th><th>δ₁ ↑</th><th>A.Rel ↓</th><th>δ₁ ↑</th>
+                  <th>A.Rel ↓</th><th>δ₁ ↑</th><th>A.Rel ↓</th><th>δ₁ ↑</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="gtk"><td>Metric3DV2<sup>†</sup></td><td>0.071</td><td>0.963</td><td>0.055</td><td>0.991</td><td>0.444</td><td>0.373</td><td>0.131</td><td>0.848</td><td>4.6</td></tr>
+                <tr class="gtk"><td>DepthAnything3<sup>†</sup></td><td>0.078</td><td>0.957</td><td>0.048</td><td>0.991</td><td>0.178</td><td>0.771</td><td>0.079</td><td>0.961</td><td>2.4</td></tr>
+                <tr><td>UniDepthV1</td><td class="best">0.058</td><td class="best">0.985</td><td>0.062</td><td>0.986</td><td>0.468</td><td>0.324</td><td>0.446</td><td>0.133</td><td>6.0</td></tr>
+                <tr><td>UniK3D</td><td>0.090</td><td>0.948</td><td>0.088</td><td>0.984</td><td>0.190</td><td>0.712</td><td>0.097</td><td>0.900</td><td>5.3</td></tr>
+                <tr><td>MoGe-2</td><td>0.077</td><td>0.945</td><td>0.211</td><td>0.540</td><td>0.262</td><td>0.605</td><td>0.114</td><td>0.862</td><td>6.1</td></tr>
+                <tr><td>DepthPro</td><td>0.098</td><td>0.918</td><td>0.091</td><td>0.912</td><td>0.332</td><td>0.535</td><td>0.156</td><td>0.837</td><td>7.8</td></tr>
+                <tr class="ours"><td>+ EpiDistill</td><td>0.110</td><td>0.884</td><td>0.076</td><td>0.971</td><td>0.314</td><td>0.544</td><td>0.151</td><td>0.841</td><td>7.1</td></tr>
+                <tr><td>UniDepthV2</td><td>0.077</td><td class="second">0.958</td><td class="second">0.057</td><td class="second">0.991</td><td class="second">0.179</td><td class="second">0.720</td><td class="second">0.093</td><td class="second">0.930</td><td>3.3</td></tr>
+                <tr class="ours"><td>+ EpiDistill</td><td class="second">0.077</td><td>0.958</td><td class="best">0.055</td><td class="best">0.991</td><td class="best">0.171</td><td class="best">0.727</td><td class="best">0.092</td><td class="best">0.935</td><td class="best">2.4</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="table-note">
+            Indoors the method is not asked to fix much — the point is that it costs nothing. UniDepthV2 + EpiDistill
+            matches the average rank (2.4) of DepthAnything3, which is given the ground-truth intrinsics.
+          </p>
+        </div>
+      </div>
+      <div class="slider-nav">
+        <button class="arrow" type="button" data-prev aria-label="Previous table">‹</button>
+        <span class="dots"></span>
+        <span class="counter"></span>
+        <button class="arrow" type="button" data-next aria-label="Next table">›</button>
+      </div>
+    </div>
+
+    <h3 class="title is-4 mt-6">Qualitative Comparison</h3>
+    <figure class="image-block">
+      <img src="assets/figures/Figure6.jpg" alt="Qualitative comparison on ETH3D and KITTI" loading="lazy" />
+      <figcaption>
+        <span class="fig-id">Figure 6.</span> ETH3D (top) and KITTI (bottom). Heatmaps show absolute relative error,
+        with the per-image A.Rel in parentheses. On the ETH3D façade, UniDepthV2's 0.389 becomes 0.034 and DepthPro's
+        0.626 becomes 0.215. KITTI visualizations are cropped 30% on the left for visibility.
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="section bg-light">
+  <div class="container is-max-widescreen">
+    <h2 class="title is-3">Analysis — Dolly Zoom</h2>
+    <p class="content">
+      In a dolly zoom the camera translates along its optical axis while the focal length changes to hold the
+      subject's 2D size constant: the image is nearly unchanged while the metric depth varies substantially. A model
+      that has merely memorized an image-to-depth prior cannot satisfy both. Because the ground-truth camera is
+      unknown on DepthPerturb's dolly zoom set, intrinsic quality is measured as the Pearson correlation |PCorr| between the predicted focal
+      length and the frame index, which varies linearly by construction.
+    </p>
+
+    <div class="slider" data-slider>
+      <div class="slider-track">
+        <div class="slide">
+          <p class="slide-title">Table 3 — DepthPerturb</p>
+          <div class="slide-scroll">
+            <table class="table is-fullwidth is-narrow is-hoverable results">
+              <thead>
+                <tr><th rowspan="2">Method</th><th colspan="3">Depth</th><th>Intrinsic</th></tr>
+                <tr><th>A.Rel ↓</th><th>RMS ↓</th><th>δ₁ ↑</th><th>|PCorr| ↑</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>UniDepthV1</td><td>0.432</td><td>0.957</td><td>0.350</td><td>0.704</td></tr>
+                <tr><td>DepthPro</td><td>0.248</td><td>0.596</td><td>0.598</td><td>0.906</td></tr>
+                <tr class="ours"><td>+ EpiDistill</td><td>0.178</td><td class="best">0.498</td><td>0.720</td><td>0.911</td></tr>
+                <tr><td>UniDepthV2</td><td>0.241</td><td>0.853</td><td>0.689</td><td>0.955</td></tr>
+                <tr class="ours"><td>+ EpiDistill</td><td class="best">0.167</td><td>0.694</td><td class="best">0.843</td><td class="best">0.965</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="table-note">
+            A.Rel falls 0.241 → 0.167 for UniDepthV2 and 0.248 → 0.178 for DepthPro, with δ₁ rising in both cases and
+            |PCorr| improving — depth and intrinsics move together, which is what disentanglement looks like.
+          </p>
+        </div>
+
+
+        <div class="slide">
+          <p class="slide-title">Supp. Figure 3 — qualitative</p>
+          <figure class="image-block">
+            <img src="assets/figures/Supp_Figure3.jpg" alt="DepthPerturb qualitative results" loading="lazy" />
+            <figcaption>
+              For each frame: RGB, then predicted depth (top) and absolute relative error (bottom) for DepthPro,
+              DepthPro + ED, UniDepthV2 and UniDepthV2 + ED. The error maps go uniformly darker with EpiDistill as the
+              camera dollies in.
+            </figcaption>
+          </figure>
+        </div>
+
+      </div>
+      <div class="slider-nav">
+        <button class="arrow" type="button" data-prev aria-label="Previous">‹</button>
+        <span class="dots"></span>
+        <span class="counter"></span>
+        <button class="arrow" type="button" data-next aria-label="Next">›</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3">BibTeX</h2>
+    <pre><code>@inproceedings{kim2026epidistill,
+  title     = {Geometric Distillation from Rectified Stereo:
+               Leveraging Epipolar Cues for Monocular Depth},
+  author    = {Kim, Jung-Hee and Liu, Xiaoming},
+  booktitle = {European Conference on Computer Vision (ECCV)},
+  year      = {2026},
+  eprint    = {2607.15600},
+  archivePrefix = {arXiv}
+}</code></pre>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="content has-text-centered is-size-7 has-text-grey">
+    <p>
+      EpiDistill · Jung-Hee Kim and Xiaoming Liu · Michigan State University and University of North Carolina at
+      Chapel Hill. Figures and tables are reproduced from the paper.
+      Code: <a href="https://github.com/JungHeeKim29/EpiDistill">github.com/JungHeeKim29/EpiDistill</a>.
+    </p>
+  </div>
+</footer>
+
+<div id="lightbox" hidden>
+  <button class="button is-small close" type="button" data-close>Close · Esc</button>
+  <img alt="">
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ---- horizontally paged sliders ---- */
+  document.querySelectorAll("[data-slider]").forEach(function (root) {
+    var track = root.querySelector(".slider-track");
+    var slides = Array.prototype.slice.call(track.children);
+    var prev = root.querySelector("[data-prev]");
+    var next = root.querySelector("[data-next]");
+    var dotsBox = root.querySelector(".dots");
+    var counter = root.querySelector(".counter");
+    if (slides.length < 2) { root.querySelector(".slider-nav").hidden = true; return; }
+
+    var dots = slides.map(function (_, i) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "dot";
+      b.setAttribute("aria-label", "Go to " + (i + 1) + " of " + slides.length);
+      b.addEventListener("click", function () { go(i); });
+      dotsBox.appendChild(b);
+      return b;
+    });
+
+    function current() {
+      return Math.round(track.scrollLeft / track.clientWidth);
+    }
+    function go(i) {
+      i = Math.max(0, Math.min(slides.length - 1, i));
+      // grow the track before the scroll starts, or a taller slide is clipped mid-transition
+      track.style.height = slides[i].getBoundingClientRect().height + "px";
+      track.scrollTo({ left: i * track.clientWidth, behavior: "smooth" });
+    }
+    function sync() {
+      var i = current();
+      dots.forEach(function (d, j) { d.setAttribute("aria-current", j === i ? "true" : "false"); });
+      counter.textContent = (i + 1) + " / " + slides.length;
+      prev.disabled = i === 0;
+      next.disabled = i === slides.length - 1;
+      // the track is a flex row, so without this every slide inherits the tallest one's height
+      track.style.height = slides[i].getBoundingClientRect().height + "px";
+    }
+
+    prev.addEventListener("click", function () { go(current() - 1); });
+    next.addEventListener("click", function () { go(current() + 1); });
+    track.addEventListener("scroll", function () {
+      window.clearTimeout(track._t);
+      track._t = window.setTimeout(sync, 90);
+    }, { passive: true });
+    window.addEventListener("resize", sync);
+    // lazily-loaded figures change a slide's height after the first measurement
+    track.querySelectorAll("img").forEach(function (im) {
+      if (!im.complete) im.addEventListener("load", sync, { once: true });
+    });
+    window.addEventListener("load", sync);
+    root.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowRight") { e.preventDefault(); go(current() + 1); }
+      if (e.key === "ArrowLeft") { e.preventDefault(); go(current() - 1); }
+    });
+    sync();
+  });
+
+  /* ---- click any figure to enlarge ---- */
+  var lb = document.getElementById("lightbox");
+  var lbImg = lb.querySelector("img");
+  var lastFocus = null;
+
+  document.querySelectorAll("figure.image-block img").forEach(function (img) {
+    img.tabIndex = 0;
+    img.setAttribute("role", "button");
+    img.title = "Click to enlarge";
+    function open() {
+      lastFocus = img;
+      lbImg.src = img.currentSrc || img.src;
+      lbImg.alt = img.alt;
+      lb.hidden = false;
+      lb.querySelector(".close").focus();
+    }
+    img.addEventListener("click", open);
+    img.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+    });
+  });
+
+  function close() {
+    lb.hidden = true;
+    lbImg.removeAttribute("src");
+    if (lastFocus) lastFocus.focus();
+  }
+  lb.addEventListener("click", function (e) {
+    if (e.target === lb || e.target === lbImg || e.target.hasAttribute("data-close")) close();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !lb.hidden) close();
+  });
+
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    document.querySelectorAll("video[autoplay]").forEach(function (v) {
+      v.autoplay = false; v.controls = true; v.pause();
+    });
+  }
+})();
+</script>
+</body>
+</html>
