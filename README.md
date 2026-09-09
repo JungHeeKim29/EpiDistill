@@ -4,29 +4,14 @@
 
 Jung-Hee Kim, Xiaoming Liu · Michigan State University / UNC Chapel Hill
 
-[Paper](#) · [Project page](#)
+[Paper](https://arxiv.org/abs/2607.15600) · [Project page](https://jungheekim29.github.io/EpiDistill/)
 
-EpiDistill transfers the scale-aware geometric priors of multi-view foundation
-models into a **single-view** metric depth model. A multi-view teacher learns
-correspondence through *Depth-Guided Epipolar Attention*; at inference the source
-views are replaced by learnable **Rectified Stereo Tokens**, so the cross-view
-attention pathway never collapses into plain intra-frame self-attention. The
-method is model-agnostic and is released on top of two frozen ViT depth
-backbones, **UniDepthV2 (ViT-L)** and **DepthPro**.
-
----
-
-## Status
-
-This repository currently ships the **model definition and the single-view
-inference / evaluation path**. See [Roadmap](#roadmap) for what is coming.
-
-| Component | State |
-|---|---|
-| Single-view model + inference (UniDepthV2, DepthPro) | ✅ in this release |
-| Packed zero-shot evaluation sets + evaluation script | ✅ code; 📦 data to be published |
-| Pretrained EpiDistill weights | 📦 to be published |
-| Multi-view teacher + training code (`L_attn`, `L_distill`, ...) | 🚧 planned |
+EpiDistill turns a frozen depth foundation model into a **single-view** metric
+depth model. A multi-view teacher learns correspondence through depth-guided
+epipolar attention; at inference the source views are replaced by learnable
+**Rectified Stereo Tokens**, so the cross-view pathway survives with one image.
+It is released on two frozen ViT backbones, **UniDepthV2 (ViT-L)** and
+**DepthPro**.
 
 ---
 
@@ -52,9 +37,26 @@ Backbone weights:
 Both backbones are vendored under `third_party/` (see
 [THIRD_PARTY.md](THIRD_PARTY.md) for licences — note UniDepth is **CC BY-NC 4.0**).
 
+EpiDistill's own weights are on the Hugging Face Hub
+([kimjun84/EpiDistill](https://huggingface.co/kimjun84/EpiDistill)):
+
+```python
+from huggingface_hub import hf_hub_download
+
+for name in ("epidistill_unidepthv2.pt", "epidistill_depthpro.pt"):
+    hf_hub_download("kimjun84/EpiDistill", name, local_dir="weights")
+```
+
+**For training only**, the edge-guided loss needs UniDepth's CUDA
+patch-extraction op:
+
+```bash
+cd third_party/UniDepth/unidepth/ops/extract_patches && bash compile.sh
+```
+
 ---
 
-## Quick start
+## Inference
 
 ```python
 import numpy as np
@@ -66,7 +68,7 @@ predictor = EpiDistillPredictor.from_pretrained(
     config=EpiDistillConfig(backbone="unidepthv2"),
 )
 
-rgb = np.array(Image.open("assets/example.jpg").convert("RGB"))
+rgb = np.array(Image.open("your_image.jpg").convert("RGB"))
 depth, K = predictor(rgb)     # depth: (H, W) float32 metres; K: (3, 3) adjusted intrinsics
 ```
 
@@ -74,136 +76,37 @@ Command line:
 
 ```bash
 python scripts/demo.py --checkpoint weights/epidistill_unidepthv2.pt \
-                       --input assets/ --output out/ --save-npy
+                       --input images/ --output out/ --save-npy
 ```
+
+Add `--backbone depthpro --checkpoint weights/epidistill_depthpro.pt` for the
+other model.
 
 ---
 
-## Evaluation
+## Training
 
-Zero-shot benchmarks are distributed as **one self-contained pickle per dataset**
-(`epidistill-eval-v1`): the exact evaluated frames, their ground-truth depth and
-their intrinsics, packed together. This removes the usual per-dataset differences
-in directory layout, depth encoding and split files, so a number produced here is
-reproducible without any dataset SDK.
+`EpiDistill.forward_multiview` runs the multi-view teacher and the single-view
+student together: the teacher attends across the real source views along their
+epipolar lines, the student replaces them with the rectified stereo tokens, and
+the objective supervises the teacher's geometry while distilling it into the
+student. `epidistill/train/` turns their outputs into a loss and a step:
+
+```
+epidistill/train/losses.py    the objective
+epidistill/train/optim.py     optimiser parameter groups, learning-rate schedule, weight EMA
+```
+
+A step takes a reference view with `S` source views: their images, ground-truth
+depths, intrinsics, and the transforms mapping reference-camera points into each
+source camera. To run one:
 
 ```bash
-python scripts/evaluate.py --checkpoint weights/epidistill_unidepthv2.pt \
-                           --eval-sets data/eval/{kitti,nyu,bonn,diode,eth3d}.pkl.gz
+python tests/test_training_step.py
 ```
 
-To pack your own split, arrange it as `rgb/ depth/ intrinsics/` and run:
-
-```bash
-python scripts/export_eval_set.py --root data/raw/nyu --dataset NYU \
-                                  --output data/eval/nyu.pkl.gz --max-side 640
-```
-
-Metrics follow the UniDepthV2 protocol: a pixel counts when its ground truth is
-inside the dataset's depth range, predictions are clipped to the same range, and
-no crop is applied. Per-dataset ranges are in
-[`epidistill/eval/protocols.py`](epidistill/eval/protocols.py). Inference uses
-bf16 autocast with horizontal-flip test-time augmentation, matching the paper.
-
----
-
-## Method
-
-```
-                    frozen ViT depth backbone  (UniDepthV2 / DepthPro)
-                                 │
-        ┌────────────────────────┼─────────────────────────┐
-        │                        │                         │
-   F_ref (L levels)         CLS tokens              D_orig , f_base
-        │                        │                         │
-        │   T_rst ──cross-attn──►│                         │
-        │        (Sec. 4.2)      │                         │
-        ▼                        │                         │
-   frame attention               │                         │
-        │                        │                         │
-        ▼                        │                         │
-   rectified epipolar attention  │                         │
-        │                        │                         │
-        ├──► F_scale ──► scale head ──► ŝ                  │
-        │           └──► camera head ──► (δx, δy) ─────────┼──► f_adj = f_base + (δx W, δy H)
-        ▼                                                  │
-     DPT head ──► Δd ──────────────────────────────────────┴──► D_adj = ŝ · (D_base + Δd)
-```
-
-Two components carry the method:
-
-**Depth-Guided Epipolar Attention** (`epidistill/modules/epipolar_attention.py`).
-A reference query attends only to points sampled along its epipolar line in the
-source view. During multi-view training the ground-truth depth gives the exact
-correspondence, a Gaussian spatial bias builds a target attention map around it,
-and a cross-entropy loss distils that target into the model's own attention.
-
-**Rectified Stereo Tokens** (`epidistill/modules/aggregation.py`,
-`EpiDistill._rectified_epipolar`). In a rectified stereo setup `R = I` and
-`t = [b, 0, 0]`, so the baseline cancels out of the epipolar line equation and the
-search space collapses to the query's own horizontal scanline — a *baseline-agnostic*
-geometry that a learnable token grid can stand in for. `T_rst` cross-attends to the
-reference features to become `T_rst-ref`, then plays the source view's role inside
-the epipolar attention, keeping the cross-view pathway alive with one image.
-
-The prediction is decoupled into structure and scale (Eq. 1). `D_base` is the
-backbone's depth normalised by its own masked median; the DPT head predicts a
-dense residual `Δd`, and the scale token drives a single global factor `ŝ`. The
-released configuration composes the residual multiplicatively —
-`D_struct = D_base · exp(τ·tanh(Δd/τ))` — which keeps the backbone's structure a
-*factor* rather than a *summand*; see `EpiDistill._compose_struct` for why that
-matters. At initialisation every head is zero-init, so the model reproduces the
-frozen backbone exactly.
-
-The released code implements exactly this one architecture. Development ablation
-switches are not exposed: `EpiDistillConfig` holds only settings a user would
-legitimately change (backbone, resolution band, TTA, precision) plus the
-structure-composition form, which is the one place the implementation and Eq. 1
-differ (the released weights are trained with the multiplicative variant).
-
----
-
-## Repository layout
-
-```
-epidistill/
-  model.py               EpiDistill: preprocessing, attention stack, heads, composition
-  config.py              EpiDistillConfig -- the released defaults
-  inference.py           EpiDistillPredictor (bf16 + hflip TTA)
-  modules/
-    epipolar_attention.py  depth-guided / rectified epipolar attention (Sec. 4.1-4.2)
-    aggregation.py         scale-token read-out, level fusion, T_rst conditioning
-    block.py               frame / epipolar transformer block
-    attention.py mlp.py rope.py layer_scale.py drop_path.py
-  heads/
-    scale_head.py          global metric scale  ŝ        (Eq. 10)
-    camera_head.py         focal residual (δx, δy)       (Eq. 11)
-    dpt_head.py            dense structural shift Δd     (Eq. 1)
-  backbones/
-    unidepth_v2.py depth_pro.py base.py
-  eval/
-    pickle_dataset.py protocols.py metrics.py evaluate.py
-  utils/checkpoint.py    checkpoint loading + research-name conversion
-scripts/
-  demo.py evaluate.py export_eval_set.py
-third_party/
-  UniDepth/ DepthPro/    vendored backbones
-```
-
-Variable names follow the paper; see [NAMING.md](NAMING.md) for the mapping from
-the research code base (`focal token` → **scale token**, `virtual token` →
-**rectified stereo token**).
-
----
-
-## Roadmap
-
-- [ ] Add `third_party/DepthPro/LICENSE` from the upstream repository
-- [ ] Publish pretrained EpiDistill weights for both backbones
-- [ ] Publish packed evaluation sets (KITTI, NYU, Bonn, DIODE, ETH3D)
-- [ ] Multi-view teacher forward + the full training objective
-- [ ] Training data pipeline (multi-view tuple sampling with the 20% overlap rule)
-- [ ] Point-cloud reconstruction evaluation (Fig. 1)
+That is a complete step on a stub backbone on CPU — the executable description of
+the batch contract and of every loss term.
 
 ---
 

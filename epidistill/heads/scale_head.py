@@ -1,15 +1,8 @@
-"""Scale head -- predicts the global metric scale factor s_hat (Eq. 1, Eq. 10).
+"""Scale head: the scale token -> the global metric factor s_hat (Eq. 10).
 
-The scale token produced by the frame/epipolar stack is mapped to log s_hat by a
-small MLP, and s_hat = exp(...) is strictly positive.  The token is the head's
-only input: no backbone depth statistic and no focal-length channel enter here,
-so the metric scale is read out of the distilled geometry rather than re-derived
-from the frozen backbone's own scale.
-
-The first linear layer is 1285-wide because the trained checkpoints were fitted
-with three auxiliary input channels (a projected CLS token, log focal_norm and
-log depth statistics) that the released configuration holds at zero.  They are
-kept as zeros rather than sliced away so the released weights load unchanged.
+The first linear layer is 1285-wide because the trained checkpoints carry three
+auxiliary input channels that the released configuration holds at zero; they are
+kept as zeros rather than sliced away so the weights load unchanged.
 """
 
 import torch

@@ -74,7 +74,11 @@ class FOVNetwork(nn.Module):
                 mode="bilinear",
                 align_corners=False,
             )
-            x = self.encoder(x)[:, 1:].permute(0, 2, 1)
+            # The Sequential is split so the raw fov-encoder tokens (B, 1+N, C) can be
+            # read by EpiDistill's scale token (same ops, same numbers).
+            fov_tokens = self.encoder[0](x)
+            self._last_fov_tokens = fov_tokens
+            x = self.encoder[1](fov_tokens)[:, 1:].permute(0, 2, 1)
             lowres_feature = self.downsample(lowres_feature)
             x = x.reshape_as(lowres_feature) + lowres_feature
         else:

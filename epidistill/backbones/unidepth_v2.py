@@ -1,10 +1,3 @@
-"""UniDepthV2 (ViT-L/14) backbone.
-
-Levels are DINOv2 blocks 5 / 11 / 17 / 23; UniDepthV2 already returns the patch
-features and the class token of each, so no adaptation is needed beyond holding
-the module frozen.
-"""
-
 import os
 import sys
 

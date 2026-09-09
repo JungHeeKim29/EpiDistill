@@ -1,13 +1,4 @@
-"""Token-mixing modules around the scale token and the rectified stereo tokens.
-
-Paper cross-reference (Fig. 3 / Sec. 4):
-  * ``RSTImageConditioning``      -- the "Cross Attn." box: T_rst queries F_ref to
-                                    embed scene context, producing T_rst-ref.
-  * ``CrossViewScaleAggregation`` -- the read-out that turns the post-epipolar
-                                    spatial tokens into the scale token F_scale.
-  * ``ScaleLevelSelfAttention``   -- folds the per-level scale states into the one
-                                    token the scale/camera heads consume.
-"""
+"""Token mixing around the scale token and the rectified stereo tokens (Fig. 3)."""
 
 import torch
 import torch.nn as nn

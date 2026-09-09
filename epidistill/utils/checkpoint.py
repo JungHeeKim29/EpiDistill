@@ -1,9 +1,8 @@
-"""Checkpoint loading, including conversion from the research code's key names.
+"""Checkpoint loading, including conversion from earlier key names.
 
-The research code base grew the scale token under the name ``focal_token`` and
-the rectified stereo tokens under the name ``virtual_tokens``.  The release uses
-the paper's names; ``convert_research_state_dict`` rewrites the old keys so a
-checkpoint trained with the research code loads unchanged.  See ``NAMING.md``.
+The released weights use the paper's names.  ``convert_legacy_state_dict``
+rewrites the key names a checkpoint may carry from an earlier internal naming, so
+either form loads unchanged.
 """
 
 from collections import OrderedDict
@@ -13,18 +12,22 @@ import torch
 # Longest prefixes first -- the rewrite is applied greedily.
 KEY_RENAMES = (
     ("viewwise_blocks.", "frame_blocks."),
-    ("virtual_img_conditioning.", "rst_conditioning."),
-    ("virtual_tokens", "rst_tokens"),
+    ("focal_fov_proj.", "scale_fov_proj."),
+    ("focal_fov_attn.", "scale_fov_attn."),
+    ("focal_camera_head.", "scale_focal_head."),
+    ("virtual_img_conditioning.", "reference_guided_attn."),
+    ("virtual_tokens", "rectified_stereo_tokens"),
     ("focal_cross_view_attn.", "scale_cross_view_attn."),
     ("focal_level_self_attn.", "scale_level_attn."),
     ("focal_level_proj.", "scale_level_proj."),
     ("focal_level_seed", "scale_level_seed"),
     ("focal_src_token", "scale_src_token"),
     ("focal_token", "scale_token"),
-    ("light_dpt.", "dpt_head."),
+    ("light_dpt.", "structure_head."),
+    ("camera_head.", "focal_head."),
 )
 
-# Research-only modules with no counterpart in the released architecture.
+# Modules with no counterpart in the released architecture.
 DROP_PREFIXES = (
     "model.",                    # the frozen backbone (loaded from its own weights)
     "pixel_decoder.",            # UniDepth decoder copy, used by an alternative DPT mode
@@ -41,8 +44,8 @@ DROP_PREFIXES = (
 )
 
 
-def convert_research_state_dict(state_dict, verbose: bool = False):
-    """Rewrite research-code parameter names into the released naming."""
+def convert_legacy_state_dict(state_dict, verbose: bool = False):
+    """Rewrite parameter names from an earlier naming into the released one."""
     out = OrderedDict()
     dropped = []
     for key, value in state_dict.items():
@@ -59,12 +62,12 @@ def convert_research_state_dict(state_dict, verbose: bool = False):
         out[name] = value
 
     if verbose and dropped:
-        print(f"[checkpoint] dropped {len(dropped)} research-only tensors")
+        print(f"[checkpoint] dropped {len(dropped)} tensors not part of the model")
     return out
 
 
 def load_checkpoint(model, path, strict: bool = True, map_location="cpu", verbose: bool = True):
-    """Load a released or research checkpoint into an :class:`EpiDistill`.
+    """Load a checkpoint into an :class:`EpiDistill`.
 
     Accepts a raw ``state_dict`` or any of the usual wrappers
     (``{'model_state_dict': ...}``, ``{'state_dict': ...}``, ``{'model': ...}``).
@@ -75,7 +78,20 @@ def load_checkpoint(model, path, strict: bool = True, map_location="cpu", verbos
             blob = blob[key]
             break
 
-    state = convert_research_state_dict(blob, verbose=verbose)
+    state = convert_legacy_state_dict(blob, verbose=verbose)
+
+    # Heads the released variant does not have (DepthPro reads its focal residual
+    # and scale from the scale token, so the CLS camera head and the scale head
+    # are absent).  A checkpoint may still carry them, untrained.
+    candidates = ("scale_head.", "focal_head.", "scale_focal_head.",
+                  "scale_fov_proj.", "scale_fov_attn.")
+    absent = tuple(p for p in candidates if not hasattr(model, p[:-1]))
+    if absent:
+        n_before = len(state)
+        state = OrderedDict((k, v) for k, v in state.items() if not k.startswith(absent))
+        if verbose:
+            print(f"[checkpoint] dropped {n_before - len(state)} tensors of absent heads {absent}")
+
     missing, unexpected = model.load_state_dict(state, strict=False)
 
     if verbose:

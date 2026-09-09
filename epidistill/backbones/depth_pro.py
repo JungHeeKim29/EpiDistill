@@ -1,29 +1,3 @@
-"""DepthPro backbone.
-
-DepthPro is a fixed 1536x1536 network reached by a STRETCH resize (exactly what
-native ``DepthPro.infer`` does), and it reports
-
-    f_px = 0.5 * W / tan(fov / 2)        inverse_depth = canonical * (W / f_px)
-
-so ``W`` cancels: the metric depth is invariant to any aspect-preserving resize of
-the input and depends on the aspect ratio only through the stretch.  That is why
-the feature maps can be resampled onto EpiDistill's (H//14, W//14) token grid with
-no crop and no padding -- the 1536x1536 buffer covers the input uniformly, so no
-pixel in the backbone's field of view is fabricated.
-
-The four exposed levels, ordered EARLY -> LATE to match UniDepthV2's block order:
-
-    latent0 : ViT block 5,  5x5 sliding-window high-res stream  -> 96x96
-    latent1 : ViT block 11, high-res stream                     -> 96x96
-    highres : ViT block 23, high-res stream                     -> 96x96
-    global  : image encoder (whole image at 384), block 23      -> 24x24
-
-The first three carry spatial detail with a local receptive field (each 384 crop
-sees 1/25 of the image); ``global`` is the only level with a genuinely global
-receptive field, and it is the one whose class token the camera and scale heads
-read.
-"""
-
 import dataclasses
 import os
 import sys
@@ -147,8 +121,8 @@ class DepthProBackbone(DepthBackbone):
         ``intrinsics`` is accepted for signature parity and stored, not consumed:
         DepthPro has no camera-conditioning input.
 
-        ``decode_depth=False`` skips the conv pyramid and the FOV pass, which is
-        what multi-view training uses for source views (features only).
+        ``decode_depth=False`` skips the conv pyramid and the FOV pass and returns
+        features only (unused by EpiDistill, which decodes every view).
         """
         B, _, H, W = image.shape
         patch_h, patch_w = H // self.patch_size, W // self.patch_size
@@ -165,10 +139,16 @@ class DepthProBackbone(DepthBackbone):
                     canonical_inverse_depth, fov_deg, H, W
                 )
                 del canonical_inverse_depth
+                # Raw tokens of the fov encoder, stashed by FOVNetwork.forward during the
+                # pass above, (B, 1+N, 1024): DepthPro's scale lives in this branch.
+                fov_tokens = self.model.fov._last_fov_tokens
             else:
                 _encodings, aux = self.model.encoder(image_net)
                 del _encodings
                 depth, pred_intrinsics = None, None
+                # The fov branch did not run: encode its 384x384 input directly.
+                low = F.interpolate(image_net, scale_factor=0.25, mode="bilinear", align_corners=False)
+                fov_tokens = self.model.fov.encoder[0](low)
 
             features, tokens = self._levels_from_aux(aux, patch_h, patch_w)
             del aux
@@ -185,6 +165,9 @@ class DepthProBackbone(DepthBackbone):
             "rays": None,
             "confidence": None,
             "gt_intrinsics": intrinsics,
+            # Raw tokens of DepthPro's fov encoder (B, 1 + 24*24, 1024): the backbone's
+            # scale lives in this branch, and EpiDistill's scale token reads it.
+            "fov_tokens": fov_tokens.detach(),
         }
 
     def decode(self, inputs):

@@ -1,5 +1,4 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-#
 # This source code is licensed under the Apache License, Version 2.0
 # found in the LICENSE file in the root directory of this source tree.
 
@@ -14,7 +13,6 @@
 #         https://github.com/naver-ai/rope-vit
 
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -99,15 +97,12 @@ class RotaryPositionEmbedding2D(nn.Module):
         """
         cache_key = (dim, seq_len, device, dtype)
         if cache_key not in self.frequency_cache:
-            # Compute frequency bands
             exponents = torch.arange(0, dim, 2, device=device).float() / dim
             inv_freq = 1.0 / (self.base_frequency**exponents)
 
-            # Generate position-dependent frequencies
             positions = torch.arange(seq_len, device=device, dtype=inv_freq.dtype)
             angles = torch.einsum("i,j->ij", positions, inv_freq)
 
-            # Compute and cache frequency components
             angles = angles.to(dtype)
             angles = torch.cat((angles, angles), dim=-1)
             cos_components = angles.cos().to(dtype)
@@ -144,11 +139,9 @@ class RotaryPositionEmbedding2D(nn.Module):
         Returns:
             Tokens with applied rotary position embeddings.
         """
-        # Embed positions with frequency components
         cos = F.embedding(positions, cos_comp)[:, None, :, :]
         sin = F.embedding(positions, sin_comp)[:, None, :, :]
 
-        # Apply rotation
         return (tokens * cos) + (self._rotate_features(tokens) * sin)
 
     def forward(self, tokens: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
@@ -166,23 +159,17 @@ class RotaryPositionEmbedding2D(nn.Module):
         Raises:
             AssertionError: If input dimensions are invalid or positions are malformed.
         """
-        # Validate inputs
         assert tokens.size(-1) % 2 == 0, "Feature dimension must be even"
         assert positions.ndim == 3 and positions.shape[-1] == 2, "Positions must have shape (batch_size, n_tokens, 2)"
 
-        # Compute feature dimension for each spatial direction
         feature_dim = tokens.size(-1) // 2
 
-        # Get frequency components
         max_position = int(positions.max()) + 1
         cos_comp, sin_comp = self._compute_frequency_components(feature_dim, max_position, tokens.device, tokens.dtype)
 
-        # Split features for vertical and horizontal processing
         vertical_features, horizontal_features = tokens.chunk(2, dim=-1)
 
-        # Apply RoPE separately for each dimension
         vertical_features = self._apply_1d_rope(vertical_features, positions[..., 0], cos_comp, sin_comp)
         horizontal_features = self._apply_1d_rope(horizontal_features, positions[..., 1], cos_comp, sin_comp)
 
-        # Combine processed features
         return torch.cat((vertical_features, horizontal_features), dim=-1)

@@ -16,9 +16,16 @@ Bochkovskii et al., *Depth Pro: Sharp Monocular Metric Depth in Less Than a Seco
 Source: https://github.com/apple/ml-depth-pro
 Licence: Apple's licence, as published in that repository.
 
-> **TODO before publishing:** copy `LICENSE` from `apple/ml-depth-pro` into
-> `third_party/DepthPro/LICENSE`. Model weights (`depth_pro.pt`) are **not**
-> redistributed here; download them from the upstream repository.
+Licence: see `third_party/DepthPro/LICENSE`. Model weights (`depth_pro.pt`) are
+**not** redistributed here; download them from the upstream repository.
+
+### Local modification to the vendored DepthPro
+
+`third_party/DepthPro/network/fov.py` — `FOVNetwork.forward` splits its
+`self.encoder` Sequential into its two steps so the raw tokens of the fov
+encoder can be read out (EpiDistill's scale token attends to them on the
+DepthPro variant). Same operations, same numbers; the depth DepthPro produces is
+unchanged.
 
 ## Derived source files
 

@@ -1,11 +1,8 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-#
 # This source code is licensed under the Apache License, Version 2.0
 # found in the LICENSE file in the root directory of this source tree.
-#
 # References:
 #   https://github.com/facebookresearch/dino/blob/master/vision_transformer.py
-#
 # EpiDistill: trimmed to the two block flavours the released model uses --
 #   attention_type='default'  -> frame attention (Sec. 3, "Frame and Global Attention")
 #   attention_type='epipolar' -> depth-guided epipolar attention (Sec. 4.1)

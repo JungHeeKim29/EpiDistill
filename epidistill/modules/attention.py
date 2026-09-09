@@ -1,5 +1,4 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-#
 # This source code is licensed under the Apache License, Version 2.0
 # found in the LICENSE file in the root directory of this source tree.
 
@@ -43,12 +42,10 @@ class Attention(nn.Module):
 
     def forward(self, x: Tensor, pos=None) -> Tensor:
         B, N, C = x.shape
-        # Sanitize input to qkv projection to avoid NaN propagation
         x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
         x = torch.clamp(x, min=-1e4, max=1e4)
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         
-        # Check for NaN in QKV projection
         if qkv.isnan().any() or qkv.isinf().any():
             print(f"⚠️ NaN/Inf in qkv projection, clamping")
             qkv = torch.nan_to_num(qkv, nan=0.0, posinf=1e4, neginf=-1e4)
@@ -72,7 +69,6 @@ class Attention(nn.Module):
             attn = torch.clamp(attn, min=-50.0, max=50.0)
             attn = attn.softmax(dim=-1)
             
-            # Store history for visualization
             if not hasattr(self, 'attn_history'):
                  self.attn_history = []
             if len(self.attn_history) > 10:
@@ -82,7 +78,6 @@ class Attention(nn.Module):
             attn = self.attn_drop(attn)
             x = attn @ v
 
-        # Check output for NaN
         if x.isnan().any() or x.isinf().any():
             print(f"⚠️ NaN/Inf in attention output, zeroing")
             x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)

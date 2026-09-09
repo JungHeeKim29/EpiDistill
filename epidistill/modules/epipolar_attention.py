@@ -27,7 +27,6 @@ def skew_symmetric(v):
     zero = torch.zeros(B, device=v.device, dtype=v.dtype)
     
     #     [ 0, -z,  y]
-    # S = [ z,  0, -x]
     #     [-y,  x,  0]
     
     x, y, z = v[:, 0], v[:, 1], v[:, 2]
@@ -61,17 +60,14 @@ def compute_fundamental_matrix(K_ref, K_src, T_ref2src):
             print(f"⚠️ [compute_fundamental_matrix] K_src has near-zero diagonal (singular)!")
             print(f"   K_src diag: {K_src_diag}")
             print(f"   K_src full:\n{K_src}")
-        # Return identity-like F to avoid crash (epipolar lines will be meaningless but training survives)
         return torch.eye(3, device=K_ref.device, dtype=K_ref.dtype).unsqueeze(0).expand(K_ref.shape[0], -1, -1)
     
     R = T_ref2src[:, :3, :3]
     t = T_ref2src[:, :3, 3] # (B, 3)
     
-    # Essential Matrix E = [t]_x R
     t_skew = skew_symmetric(t)
     E = t_skew @ R
     
-    # Fundamental Matrix F = K_src^-T E K_ref^-1
     K_ref_inv = torch.inverse(K_ref)
     K_src_inv = torch.inverse(K_src)
     
@@ -87,8 +83,6 @@ def get_epipolar_lines_cross(K_ref, K_src, T_ref2src, p_ref):
     F = compute_fundamental_matrix(K_ref, K_src, T_ref2src) # (B, 3, 3)
     lines = F @ p_ref # (B, 3, N)
     
-    # Normalize lines: ax + by + c = 0 is equivalent to k(ax + by + c) = 0
-    # Normalize such that sqrt(a^2 + b^2) = 1 for numerical stability in intersection calc
     ab_norm = torch.norm(lines[:, :2, :], dim=1, keepdim=True) + 1e-5
     lines = lines / ab_norm
     
@@ -115,7 +109,6 @@ def get_line_image_intersection(lines, H, W):
     sign_b[sign_b == 0] = 1.0
     b_safe = torch.where(b.abs() < eps, sign_b * eps, b)
     
-    # Intersections with borders
     y_x0 = -c / b_safe
     x1, y1 = torch.zeros_like(y_x0), y_x0
     
@@ -139,7 +132,6 @@ def get_line_image_intersection(lines, H, W):
     in_bound = (pts[..., 0] >= -pad) & (pts[..., 0] <= W - 1 + pad) & \
                (pts[..., 1] >= -pad) & (pts[..., 1] <= H - 1 + pad)
                
-    # Project to 1D
     dx = -b
     dy = a
     proj = pts[..., 0] * dx.unsqueeze(2) + pts[..., 1] * dy.unsqueeze(2)
@@ -166,15 +158,12 @@ def sample_lines_uniform(lines, H, W, num_samples):
     
     p_start, p_end, valid_line, _, _ = get_line_image_intersection(lines, H, W)
     
-    # Handle invalid
     p_start[~valid_line] = 0.0
     p_end[~valid_line] = 0.0
     
-    # Interpolate
     t = torch.linspace(0, 1, num_samples, device=device).view(1, 1, num_samples, 1)
     points = p_start.unsqueeze(2) * (1 - t) + p_end.unsqueeze(2) * t
     
-    # Sanitize
     points = torch.nan_to_num(points, nan=0.0, posinf=1e4, neginf=-1e4)
     
     line_len = torch.norm(p_end - p_start, dim=-1)
@@ -203,7 +192,6 @@ def get_epipolar_sampling_grid(
         B, H, W, _ = query_coords.shape
         N = H * W
     else:
-        # Assuming (B, N, 2)
         B, N, _ = query_coords.shape
         H = img_shape[0] if img_shape else int(math.sqrt(N))
         W = img_shape[1] if img_shape else int(math.sqrt(N))
@@ -216,10 +204,8 @@ def get_epipolar_sampling_grid(
     lines = get_epipolar_lines_cross(K_ref, K_src, T_ref2src, p_ref)     # (B, 3, N)
     grid, valid_samples = sample_lines_uniform(lines, img_shape[0], img_shape[1], num_samples)
 
-    # Reshape to spatial (B, H, W, S, 2)
     grid = grid.view(B, H, W, num_samples, 2)
     
-    # Normalize grid from pixel coordinates [0, W-1] to [-1, 1]
     H_s, W_s = img_shape
     grid_norm = torch.zeros_like(grid)
     grid_norm[..., 0] = 2.0 * grid[..., 0] / max(W_s - 1, 1) - 1.0
@@ -275,24 +261,14 @@ class DepthGuidedEpipolarAttention(nn.Module):
         B, C, H, W = query_feat.shape
         H_s, W_s = key_feat.shape[-2:]
         
-        # 1. Generate Sampling Grid
         if rectified:
-            # Rectified Stereo Sampling (Horizontal)
             # Sample uniformly along the same row (y)
-            # x_s can be [0, W_s-1]
             
-            # Create grid (B, H, W, S, 2)
-            # grid[..., 0] = linspace(-1, 1)
-            # grid[..., 1] = y_norm
             
-            # Y coords normalized: [-1, 1]
-            # y corresponds to query y.
             # query y ranges [0, H-1]. Normalized: 2*y/(H-1) - 1.
             
-            # y_grid: (B, H, W, S)
             y_norm = torch.linspace(-1, 1, steps=H, device=query_feat.device).view(1, H, 1, 1).expand(B, H, W, self.num_samples)
             
-            # x_grid: (B, H, W, S) -> -1 to 1
             x_norm = torch.linspace(-1, 1, steps=self.num_samples, device=query_feat.device).view(1, 1, 1, self.num_samples).expand(B, H, W, self.num_samples)
             
             sampling_grid = torch.stack([x_norm, y_norm], dim=-1) # (B, H, W, S, 2)
@@ -302,8 +278,6 @@ class DepthGuidedEpipolarAttention(nn.Module):
             
             
         else:
-            # Epipolar Sampling
-            # Create pixel coordinates for Query
             y, x = torch.meshgrid(torch.arange(H, device=query_feat.device), torch.arange(W, device=query_feat.device), indexing='ij')
             query_coords = torch.stack([x, y], dim=-1).unsqueeze(0).expand(B, -1, -1, -1).float() # (B, H, W, 2)
             
@@ -314,9 +288,7 @@ class DepthGuidedEpipolarAttention(nn.Module):
                 num_samples=self.num_samples,
             ) # (B, H, W, S, 2)
         
-        # Robustness: NaN check and Fix
         if torch.isnan(sampling_grid).any():
-             # print("⚠️ Sampling Grid has NaN!")
              sampling_grid = torch.nan_to_num(sampling_grid)
 
         N = H * W
@@ -325,71 +297,47 @@ class DepthGuidedEpipolarAttention(nn.Module):
         # Clamp grid for stability (grid_sample can handle outside, but gradients might be huge)
         flat_grid = flat_grid.clamp(-2.0, 2.0)
 
-        # 2. Sample Keys and Values
-        # grid output: (B, N, S, 2) -> grid_sample -> (B, C, N, S)
         sampled_k = F.grid_sample(key_feat, flat_grid, align_corners=True, mode='bilinear', padding_mode='zeros')
         sampled_v = F.grid_sample(value_feat, flat_grid, align_corners=True, mode='bilinear', padding_mode='zeros')
         
-        # 3. Attention Computation
-        # Q: (B, C, H, W) -> (B, H*W, C)
         q = self.q_proj(query_feat.permute(0, 2, 3, 1)).view(B, N, C)
         
-        # K, V: (B, C, N, S) -> (B, N, S, C)
         k = self.k_proj(sampled_k.permute(0, 2, 3, 1)) 
         v = self.v_proj(sampled_v.permute(0, 2, 3, 1))
         
-        # Multi-head reshape
         head_dim = self.dim // self.num_heads
         
-        # q: (B, N, nH, d)
         q = q.view(B, N, self.num_heads, head_dim).transpose(1, 2) # (B, nH, N, d)
         
-        # k, v: (B, N, S, nH, d) -> (B, nH, N, d, S) / (B, nH, N, S, d)
         k_reshaped = k.view(B, N, self.num_samples, self.num_heads, head_dim).permute(0, 3, 1, 2, 4) # (B, nH, N, S, d)
         v = v.view(B, N, self.num_samples, self.num_heads, head_dim).permute(0, 3, 1, 2, 4) # (B, nH, N, S, d)
         
         # --- Apply RoPE for Geometric Bias ---
         if self.rope is not None and pos is not None:
-            # q: (B, nH, N, d). pos: (B, N, 2)
             q = self.rope(q, pos)
             
             if rectified:
-                # Key Position Generation for Rectified Grid
                 # Query pos is (B, N, 2) -> (B, H*W, 2) -> (y, x)
-                # We need pos_k for keys (B, nH, N, S, d)
                 # Key positions: y is same as Query y. x is 0..S-1.
                 
-                # Extract Y coords from query pos
                 q_y = pos[..., 0].long() # (B, N)
                 
-                # Generate S indices 0..S-1
                 s_idx = torch.arange(self.num_samples, device=q.device).unsqueeze(0).unsqueeze(0).expand(B, N, -1) # (B, N, S)
                 
-                # Expand Y to S
                 k_y = q_y.unsqueeze(-1).expand(-1, -1, self.num_samples) # (B, N, S)
                 
-                # Combine to (B, N, S, 2) - Flatten to (B, N*S, 2) for RoPE
                 pos_k = torch.stack([k_y, s_idx], dim=-1).view(B, N*self.num_samples, 2)
                 
-                # Flatten k to match: (B, nH, N*S, d)
                 k_flat = k_reshaped.permute(0, 1, 2, 4, 3).flatten(2, 3) # (B, nH, N*S, d) 
                 # Note: k_reshaped was (B, nH, N, S, d). Flattening N, S maps to N*S
                 
-                # Apply RoPE
                 k_rope = self.rope(k_flat, pos_k)
                 
-                # Reshape back to (B, nH, N, S, d)
                 # Then permute to (B, nH, N, d, S) for attention
                 k = k_rope.view(B, self.num_heads, N, self.num_samples, head_dim).permute(0, 1, 2, 4, 3) # (B, nH, N, d, S)
                 
             else:
-                # Teacher / Epipolar Mode
-                # Grid contains (x, y) sampling coordinates in [-1, 1]
-                # We need to map these to pixel coordinates for RoPE
                 
-                # flat_grid: (B, N, S, 2)
-                # Denormalize to [0, W-1] and [0, H-1]
-                # x_pix = (x_norm + 1) * (W - 1) / 2
                 
                 grid_norm = flat_grid # (B, N, S, 2)
                 
@@ -400,33 +348,24 @@ class DepthGuidedEpipolarAttention(nn.Module):
                 x_pix = (x_norm + 1.0) * (W_s - 1.0) / 2.0
                 y_pix = (y_norm + 1.0) * (H_s - 1.0) / 2.0
                 
-                # Round to nearest integer for embedding lookup
                 x_idx = x_pix.round().long().clamp(0, W_s - 1)
                 y_idx = y_pix.round().long().clamp(0, H_s - 1)
                 
-                # Combine to (B, N*S, 2)
-                # We need to match k_flat shape for RoPE
                 # k_reshaped: (B, nH, N, d, S) -> permute to (B, nH, N, S, d) -> flatten N, S
                 
-                # pos_k: (B, N, S, 2) -> flatten to (B, N*S, 2)
                 pos_k = torch.stack([y_idx, x_idx], dim=-1).view(B, N*self.num_samples, 2)
                 
-                # Flatten k: (B, nH, N*S, d)
                 k_flat = k_reshaped.permute(0, 1, 2, 4, 3).flatten(2, 3)
                 
-                # Apply RoPE
                 k_rope = self.rope(k_flat, pos_k)
                 
-                # Reshape back to (B, nH, N, S, d) -> permute to (B, nH, N, d, S)
                 k = k_rope.view(B, self.num_heads, N, self.num_samples, head_dim).permute(0, 1, 2, 4, 3)
 
         else:
              k = k_reshaped.permute(0, 1, 2, 4, 3)
         
-        # Q expension: (B, nH, N, 1, d)
         q = q.unsqueeze(3)
         
-        # Attention Scores: (B, nH, N, 1, d) @ (B, nH, N, d, S) -> (B, nH, N, 1, S)
         attn = (q @ k) * self.scale
 
         matching_loss = None
@@ -434,17 +373,12 @@ class DepthGuidedEpipolarAttention(nn.Module):
         # Guard: skip depth bias entirely if K_ref is singular (near-zero fx/fy)
         _k_ref_ok = (K_ref.diagonal(dim1=-2, dim2=-1)[:, :2].abs() > 1e-6).all()
         if apply_depth_bias and depth is not None and not rectified and _k_ref_ok:
-             # Calculate Bias based on distance to Projected GT Depth
-             # sampling_grid: (B, H, W, S, 2) in Normalized Coords [-1, 1]
-             # depth: (B, H*W) or (B, H, W)
              
-             # 1. Project Reference + Depth -> Source Pixel
              if depth.dim() == 3: depth_flat = depth.view(B, -1)
              elif depth.dim() == 4: depth_flat = depth.view(B, -1)
              else: depth_flat = depth
              
              # Reuse helper logic or reimplement for efficiency
-             # We need p_ref coords.
              # p_ref_pix was generated in get_epipolar_sampling_grid but not returned.
              # Regenerate p_ref_pix
              y_ref, x_ref = torch.meshgrid(torch.arange(H, device=query_feat.device), torch.arange(W, device=query_feat.device), indexing='ij')
@@ -453,7 +387,6 @@ class DepthGuidedEpipolarAttention(nn.Module):
              ones = torch.ones(B, 1, N, device=query_feat.device)
              p_ref_homo = torch.cat([p_ref_pix, ones], dim=1) # (B, 3, N)
              
-             # Project to Source
              K_ref_inv = torch.inverse(K_ref)
              Ray_ref = K_ref_inv @ p_ref_homo 
              R = T_ref2src[:, :3, :3]
@@ -467,62 +400,36 @@ class DepthGuidedEpipolarAttention(nn.Module):
              
              p_src_pix = p_src_homo[:, :2, :] / (z_src + 1e-6) # (B, 2, N)
              
-             # Normalize to [-1, 1] using H_s, W_s
-             # p_src_norm_x = 2 * p_src_pix_x / (W_s - 1) - 1
-             # p_src_norm_y = 2 * p_src_pix_y / (H_s - 1) - 1
              
              p_src_norm = torch.zeros_like(p_src_pix)
              p_src_norm[:, 0, :] = 2.0 * p_src_pix[:, 0, :] / max(W_s - 1, 1) - 1.0
              p_src_norm[:, 1, :] = 2.0 * p_src_pix[:, 1, :] / max(H_s - 1, 1) - 1.0
              
-             # p_src_norm: (B, 2, N) -> (B, N, 1, 2)
              target_points = p_src_norm.transpose(1, 2).unsqueeze(2) # (B, N, 1, 2)
              
-             # flat_grid: (B, N, S, 2)
-             # Compute Distance Squared: (B, N, S)
              dist_sq = ((flat_grid - target_points)**2).sum(dim=-1)
              
-             # Gaussian-like Bias: -scale * dist_sq
-             # We want high attention (0 bias) at dist=0, and low attention (-inf bias) far away.
-             # Gaussian: exp(-dist^2 / sigma^2). in Log-space: -dist^2 / sigma^2.
-             # Let sigma be small (e.g. 0.1 in norm coords ~ 5-10% of image). 
-             # 1/sigma^2 ~ 100.
              
              bias_scale = 50.0
              attn_bias = -bias_scale * dist_sq # (B, N, S)
              
-             # Handle invalid projection (z < 0) -> No bias (or huge negative bias?)
-             # If projected point  s invalid, we shouldn't bias towards it.
-             # valid_proj: (B, 1, N) -> (B, N, 1)
              valid_proj_flat = valid_proj.squeeze(1).unsqueeze(-1) # (B, N, 1)
              
-             # If invalid, bias = 0.0 (Neutral) or maintain original behavior
              attn_bias = torch.where(valid_proj_flat, attn_bias, torch.zeros_like(attn_bias))
 
              if return_matching_loss:
-                 # Calculate matching loss using CrossEntropy before injecting bias
-                 # Target is the index with the maximum GT bias (smallest distance)
-                 # Only consider valid projections and valid epipolar line samples
-                 # attn: (B, nH, N, 1, S)
-                 # attn_bias: (B, N, S)
-                 # valid_mask: (B, H, W, S) -> (B, N, S)
                  
                  valid_mask_flat = valid_mask.view(B, N, self.num_samples) # (B, N, S)
                  gt_target_idx = torch.argmax(attn_bias, dim=-1) # (B, N)
                  
-                 # Pool attention logits across heads
-                 # attn_mean = attn.mean(dim=1).squeeze(2) # (B, N, S)
-                 # Wait, computing CE directly on raw logits gives gradients to q, k
                  attn_logits = attn.mean(dim=1).squeeze(2) # (B, N, S)
                  
-                 # Cross Entropy Loss
                  ce_loss = F.cross_entropy(
                      attn_logits.reshape(-1, self.num_samples), 
                      gt_target_idx.reshape(-1), 
                      reduction='none'
                  ).reshape(B, N)
                  
-                 # Mask out invalid projections and completely invalid lines
                  # A line is valid if it has at least one valid sample, but we also rely on valid_proj
                  any_valid = valid_mask_flat.any(dim=-1) # (B, N)
                  valid_matching = valid_proj_flat.squeeze(-1) & any_valid # (B, N)
@@ -532,53 +439,32 @@ class DepthGuidedEpipolarAttention(nn.Module):
                  else:
                      matching_loss = torch.tensor(0.0, device=query_feat.device)
 
-             # Add to attn: (B, nH, N, 1, S)
-             # Expand bias: (B, 1, N, 1, S)
              attn = attn + attn_bias.unsqueeze(1).unsqueeze(3)
         
-        # Robustness: Clamp attention scores
 
-        # attn = attn.clamp(min=-50, max=50) # Removed global clamp, will mask invalid instead
         
-        # Apply Validity Mask
-        # valid_mask: (B, H, W, S) -> flatten to (B, N, S)
-        # We need to reshape valid_mask to match attn: (B, nH, N, 1, S)
         
         valid_mask_flat = valid_mask.view(B, N, self.num_samples) # (B, N, S)
         valid_mask_expanded = valid_mask_flat.unsqueeze(1).unsqueeze(3).expand(B, self.num_heads, N, 1, self.num_samples)
         
-        # Set invalid scores to -inf
         attn = attn.masked_fill(~valid_mask_expanded, float('-inf'))
 
-        # Safe Softmax handling
-        # 1. Identify rows where ALL entries are -inf (i.e. all invalid)
         # valid_mask_expanded: (B, nH, N, 1, S)
         # any_valid: (B, nH, N, 1, 1)
         any_valid = valid_mask_expanded.any(dim=-1, keepdim=True)
         
-        # 2. To prevent NaN in softmax, replace -inf with 0 for all-invalid rows TEMPORARILY
         # This makes softmax output uniform (1/S), but we will mask the result later anyway.
-        # Ideally, we want the output Feature to be 0 for these pixels.
         
-        # If all are -inf, max is -inf -> exp(x-max) = exp(0) = 1 -> sum = S -> 1/S.
-        # But directly passing -inf to softmax usually results in nan if all are -inf.
-        # Workaround: Set input to 0 where all invalid.
         attn_safe = torch.where(any_valid, attn, torch.zeros_like(attn))
         
         attn = attn_safe.softmax(dim=-1)
         
-        # 3. Mask the OUTPUT of softmax to true 0.0 where no valid samples existed
-        # If no valid samples, we don't want to attend to anything (uniform attention to garbage is bad).
-        # We want the resulting value-aggregation to be 0.
         attn = attn.masked_fill(~any_valid, 0.0)
 
-        # Output: (B, nH, N, 1, S) @ (B, nH, N, S, d) -> (B, nH, N, 1, d)
         out = attn @ v
         
-        # Reshape Output
         out = out.squeeze(3).transpose(1, 2).reshape(B, H, W, C)
         
-        # Output Projection: (B, H, W, C) -> (B, C, H, W)
         out = self.o_proj(out).permute(0, 3, 1, 2)
         
         out = torch.nan_to_num(out, nan=0.0, posinf=1e4, neginf=-1e4).clamp(-1e4, 1e4)

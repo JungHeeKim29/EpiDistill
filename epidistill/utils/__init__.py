@@ -1,3 +1,3 @@
-from .checkpoint import convert_research_state_dict, load_checkpoint
+from .checkpoint import convert_legacy_state_dict, load_checkpoint
 
-__all__ = ["convert_research_state_dict", "load_checkpoint"]
+__all__ = ["convert_legacy_state_dict", "load_checkpoint"]

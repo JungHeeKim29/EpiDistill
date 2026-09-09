@@ -1,22 +1,3 @@
-"""The contract EpiDistill expects from a frozen monocular depth backbone.
-
-EpiDistill never fine-tunes the backbone; it only reads its tokens and corrects
-its depth (Eq. 1).  A backbone therefore has to expose exactly two calls:
-
-    encode(image)  -> dict with
-                        'features' : list of L tensors, (B, H//p, W//p, C)
-                        'tokens'   : list of L tensors, (B, 1, C)   -- one CLS per level
-    decode(inputs) -> (depth (B,1,H,W), intrinsics (B,3,3), rays, confidence)
-
-``L`` must equal ``num_levels`` (4) and ``C`` must equal ``token_dim`` (1024):
-the frame/epipolar stack, the rectified stereo token grid and the DPT head are
-all built for those numbers.
-
-Both released backbones return their levels ordered EARLY -> LATE.  The ordering
-is load-bearing: the DPT head upsamples level 0 the most and level 3 the least,
-and the camera/scale heads read the CLS of the LAST level.
-"""
-
 from abc import ABC, abstractmethod
 
 import torch

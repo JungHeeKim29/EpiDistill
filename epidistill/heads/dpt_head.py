@@ -56,17 +56,12 @@ class ResidualConvUnit(nn.Module):
         )
 
         if self.bn==True:
-            # GroupNorm, not BatchNorm2d: main.py's DDP setup runs
-            # torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) on the whole model, and
-            # SyncBatchNorm's forward issues its own NCCL collective. This module is called
-            # from inside a gradient-checkpointed region (model.py _decode_view_fn), which
-            # re-invokes forward() during backward recompute -- an extra, rank-timing-dependent
-            # SyncBatchNorm collective that races with DDP's own gradient AllReduce and hangs
-            # (reproduced via faulthandler stack dump: rank stuck in
-            # torch/nn/modules/_functions.py SyncBatchNorm.forward during checkpoint recompute).
-            # GroupNorm normalizes within a single sample (no cross-batch/cross-rank stats), so
-            # it isn't touched by convert_sync_batchnorm and is safe under checkpointing, while
-            # still bounding the residual stream the same way BatchNorm did.
+            # GroupNorm, not BatchNorm2d.  This module runs inside a gradient-checkpointed
+            # region, so its forward is re-invoked during the backward recompute.  A norm
+            # with cross-sample statistics turns that second forward into an extra
+            # synchronising collective under distributed training, which can deadlock
+            # against the gradient reduction.  GroupNorm normalises within a single sample,
+            # so it is safe to recompute while bounding the residual stream the same way.
             self.bn1 = nn.GroupNorm(min(32, features), features)
             self.bn2 = nn.GroupNorm(min(32, features), features)
 
@@ -187,15 +182,12 @@ class DPTHead(nn.Module):
         self.scratch.output_conv1 = nn.Conv2d(head_features_1, head_features_1 // 2, kernel_size=3, stride=1, padding=1)
         
         # +1: the normalised base-depth channel D_base is concatenated before the
-        # output convolutions, so the head predicts its residual, not depth from scratch.
         in_features_conv2 = head_features_1 // 2 + 1
 
         self.scratch.output_conv2 = nn.Sequential(
             nn.Conv2d(in_features_conv2, head_features_2, kernel_size=3, stride=1, padding=1),
             nn.ReLU(True),
             nn.Conv2d(head_features_2, output_dim, kernel_size=1, stride=1, padding=0),
-            # nn.ReLU(True),
-            # nn.Identity(),
         )
         
         # Zero-init the output layer:
@@ -226,7 +218,6 @@ class DPTHead(nn.Module):
                 patch_h,
                 patch_w
             )
-            # print(f"[Head] Layer {i} - shape AFTER reshape => (B,C,{patch_h},{patch_w}): {x.shape}\n")
 
             x = self.projects[i](x)
             x = self.resize_layers[i](x)

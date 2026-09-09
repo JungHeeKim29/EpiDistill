@@ -40,6 +40,8 @@ class StubBackbone(DepthBackbone):
             "tokens": [
                 torch.randn(B, 1, self.token_dim, generator=g) for _ in range(self.num_levels)
             ],
+            # DepthPro's fov encoder: 24x24 patches + CLS at 1024-d
+            "fov_tokens": torch.randn(B, 1 + 24 * 24, self.token_dim, generator=g),
             "shape": (H, W),
         }
 
@@ -56,11 +58,11 @@ class StubBackbone(DepthBackbone):
         return self
 
 
-def test_single_view_forward():
+def test_single_view_forward(backbone="unidepthv2"):
     model_mod.build_backbone = lambda name, **kwargs: StubBackbone(**kwargs)
 
     torch.manual_seed(0)
-    config = EpiDistillConfig(backbone="unidepthv2")
+    config = EpiDistillConfig(backbone=backbone)
     model = model_mod.EpiDistill(config, device=torch.device("cpu")).eval()
 
     image = torch.randn(1, 3, 476, 630)
@@ -75,14 +77,15 @@ def test_single_view_forward():
     return depth, K
 
 
-def test_zero_init_preserves_backbone_structure():
+def test_zero_init_preserves_backbone_structure(backbone="unidepthv2"):
     """Every head is zero-init, so an untrained model must reproduce the backbone's
     STRUCTURE exactly -- the prediction differs from it by one constant per image
-    (the median normalisation times s_hat)."""
+    (the median normalisation times s_hat).  On the DepthPro variant s_hat starts
+    at the backbone's own scale, so the prediction must equal the backbone depth."""
     model_mod.build_backbone = lambda name, **kwargs: StubBackbone(**kwargs)
 
     torch.manual_seed(0)
-    model = model_mod.EpiDistill(EpiDistillConfig(), device=torch.device("cpu")).eval()
+    model = model_mod.EpiDistill(EpiDistillConfig(backbone=backbone), device=torch.device("cpu")).eval()
 
     image = torch.randn(1, 3, 476, 630)
     backbone_depth = model.backbone.decode(model.backbone.encode(image))[0]
@@ -95,13 +98,15 @@ def test_zero_init_preserves_backbone_structure():
     ratio = (depth / backbone_depth).flatten()
     spread = (ratio.max() - ratio.min()) / ratio.mean()
     assert spread < 1e-3, f"structure is not the backbone's at init (spread {spread:.2e})"
+    if backbone == "depthpro":
+        assert abs(ratio.mean().item() - 1.0) < 1e-3, "DepthPro variant must start at the backbone's scale"
     return ratio.mean().item()
 
 
 if __name__ == "__main__":
-    depth, K = test_single_view_forward()
-    print(f"forward ok: depth {tuple(depth.shape)} "
-          f"[{depth.min():.3f}, {depth.max():.3f}] m, fx={K[0, 0, 0]:.1f}")
-    scale = test_zero_init_preserves_backbone_structure()
-    print(f"zero-init structure ok: ratio to backbone is the constant {scale:.4f} "
-          f"(= s_hat / median(D_orig))")
+    for backbone in ("unidepthv2", "depthpro"):
+        depth, K = test_single_view_forward(backbone)
+        print(f"[{backbone}] forward ok: depth {tuple(depth.shape)} "
+              f"[{depth.min():.3f}, {depth.max():.3f}] m, fx={K[0, 0, 0]:.1f}")
+        scale = test_zero_init_preserves_backbone_structure(backbone)
+        print(f"[{backbone}] zero-init structure ok: ratio to backbone is the constant {scale:.4f}")
